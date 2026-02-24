@@ -1,0 +1,9 @@
+.env
+.vscode/settings.json
+__pycache__/app_ui.cpython-310.pyc
+__pycache__/api.cpython-310.pyc
+__pycache__/app.cpython-310.pyc
+__pycache__/llm_explainer.cpython-310.pyc
+__pycache__/scenario_engine.cpython-310.pyc
+__pycache__/utils.cpython-310.pyc
+models/sarimax_model_new.pkl
