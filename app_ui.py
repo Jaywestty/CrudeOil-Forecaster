@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # API Configuration 
-API_BASE = os.getenv("API_URL_BASE", "http://localhost:8000")
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 
 # Custom CSS 
@@ -249,7 +249,7 @@ st.markdown("""
 def check_api_health():
     """Check if the FastAPI backend is running."""
     try:
-        r = requests.get(f"{API_BASE}/", timeout=3)
+        r = requests.get(f"{API_URL}/", timeout=60)
         return r.status_code == 200
     except:
         return False
@@ -258,7 +258,7 @@ def check_api_health():
 def get_current_price():
     """Fetch current Brent price from API."""
     try:
-        r = requests.get(f"{API_BASE}/current-price", timeout=5)
+        r = requests.get(f"{API_URL}/current-price", timeout=5)
         return r.json()
     except:
         return {"price": "N/A", "date": "N/A", "unit": "USD/barrel"}
@@ -267,7 +267,7 @@ def get_current_price():
 def get_scenarios():
     """Fetch available scenarios from API."""
     try:
-        r = requests.get(f"{API_BASE}/scenarios", timeout=5)
+        r = requests.get(f"{API_URL}/scenarios", timeout=5)
         return r.json()["scenarios"]
     except:
         return []
@@ -277,7 +277,7 @@ def run_simulation(query, forecast_weeks):
     """Call the /simulate endpoint with user query."""
     try:
         r = requests.post(
-            f"{API_BASE}/simulate",
+            f"{API_URL}/simulate",
             json={"query": query, "forecast_weeks": forecast_weeks},
             timeout=60   # LLM calls can take a moment
         )
