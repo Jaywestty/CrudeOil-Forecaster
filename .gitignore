@@ -7,3 +7,4 @@ __pycache__/llm_explainer.cpython-310.pyc
 __pycache__/scenario_engine.cpython-310.pyc
 __pycache__/utils.cpython-310.pyc
 models/sarimax_model_new.pkl
+.gitattributes
