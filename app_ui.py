@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import os
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -14,7 +15,7 @@ st.set_page_config(
 )
 
 # API Configuration 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("API_URL_BASE", "http://localhost:8000")
 
 
 # Custom CSS 
@@ -44,9 +45,18 @@ st.markdown("""
         color: var(--text-main);
     }
 
-    /* Hide default streamlit elements */
-    #MainMenu, footer, header { visibility: hidden; }
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+    header {
+    visibility: visible !important;
+    background: #0d0d0d !important;   /* keep black */
+}
+
+[data-testid="stHeader"] {
+    background: #0d0d0d !important;
+}
+
+[data-testid="stToolbar"] {
+    background: #0d0d0d !important;
+}
 
     /* Header */
     .main-header {
