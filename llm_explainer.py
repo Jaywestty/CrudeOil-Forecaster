@@ -242,6 +242,16 @@ class LLMExplainer:
 
             Query: "China reopens and oil demand surges"
             → { "demand_boom": 1.0 }
+
+            Query: "Saudi Arabia or any country increases oil output or production"
+            → This is a SUPPLY INCREASE — bearish for prices.
+               Map to: { "global_recession": 0.50, "rate_hike": 0.30, "opec_cut": 0.20 }
+               Reasoning: Supply glut suppresses prices similarly to demand collapse.
+               Do NOT map supply increases to demand_boom.
+
+            Query: "What if there is a ceasefire or peace deal?"
+            → This is a TENSION REDUCTION — map to demand_boom + opec_cut reversal:
+               { "demand_boom": 0.55, "rate_hike": 0.25, "global_recession": 0.20 }
         """
 
         try:
@@ -443,21 +453,38 @@ class LLMExplainer:
         system_prompt = """
             You are a senior energy economist explaining a probabilistic oil price forecast.
 
-            This is NOT a single scenario result. It is a WEIGHTED DISTRIBUTION
-            across multiple scenarios. Your explanation must:
+            CRITICAL RULES — read before writing a single word:
 
-            Paragraph 1 — Headline: State the expected price and range immediately.
-            Which scenario carries the most weight and why?
+            1. ACCEPT THE MODEL NUMBERS AS GIVEN. Do not override them with
+               economic theory. If the model shows a price DROP during a supply
+               disruption, explain why that specific model output occurred —
+               do not say prices will rise when the numbers show a drop.
 
-            Paragraph 2 — Range interpretation: What needs to happen for the LOW
-            end to materialise? What needs to happen for the HIGH end?
+            2. NEVER duplicate the low and high end prices. Paragraph 2 must
+               state TWO DIFFERENT prices — the exact low end price AND the
+               exact high end price from the data given. Read them carefully
+               before writing.
 
-            Paragraph 3 — Macro signals: Briefly explain how current market
-            conditions (VIX, dollar, inventories) shifted the probability weights
-            from what the query alone would have suggested.
+            3. DO NOT say "reduced consumption leads to higher prices" or any
+               other internally contradictory logic. If demand falls, prices fall.
+               If supply falls, prices may rise OR fall depending on what the
+               model computed — always follow the numbers.
 
-            Tone: institutional research note — precise and confident.
-            Under 250 words. Plain English. No hedging every sentence.
+            Structure — 3 paragraphs:
+
+            Paragraph 1: State the expected price (exact number from data) and
+            which scenario dominates and why it was assigned the highest weight
+            given the user's query.
+
+            Paragraph 2: "The low end of $[EXACT LOW PRICE] would materialise if
+            [specific condition]. The high end of $[EXACT HIGH PRICE] would
+            materialise if [different specific condition]."
+            These MUST be two different prices and two different conditions.
+
+            Paragraph 3: How did current macro signals (VIX, dollar, inventories)
+            shift the probability weights? If no adjustments were made, say so.
+
+            Tone: institutional research note. Under 240 words. Plain English.
         """
 
         try:
