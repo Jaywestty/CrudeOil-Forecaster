@@ -180,24 +180,7 @@ def get_scenarios():
     except:
         return []
 
-def run_simulation(query, forecast_weeks):
-    """Call the original /simulate endpoint — single scenario."""
-    try:
-        r = requests.post(
-            f"{API_URL}/simulate",
-            json={"query": query, "forecast_weeks": forecast_weeks},
-            timeout=60
-        )
-        if r.status_code == 200:
-            return r.json(), None
-        return None, r.json().get("detail", "Unknown error")
-    except requests.exceptions.ConnectionError:
-        return None, "Cannot connect to API. Is the backend running?"
-    except Exception as e:
-        return None, str(e)
-
-
-# ── NEW: Probabilistic simulation call ────────────────────────────
+# ── Probabilistic simulation call ─────────────────────────────────
 
 def run_probabilistic_simulation(query, forecast_weeks):
     """
@@ -377,140 +360,6 @@ def make_probabilistic_chart(data):
         margin=dict(l=10, r=10, t=20, b=10), height=380
     )
     return fig
-
-
-# ── Result Renderers ───────────────────────────────────────────────
-
-def render_single_results(data):
-    """
-    Render results for /simulate — original single scenario mode.
-    Identical to your original working version.
-    """
-    confidence = data["parsed_confidence"]
-    st.markdown(f"""
-    <div style='margin-bottom:1.2rem;'>
-        <span class='badge-{confidence}'>{confidence} confidence</span>
-        <span style='font-family:DM Mono,monospace; font-size:0.72rem;
-                     color:#8a8580; margin-left:0.8rem;'>
-            Mapped to: <strong style='color:#f0ede8;'>{data['scenario_name']}</strong>
-        </span>
-        <div style='font-family:DM Sans,sans-serif; font-size:0.8rem;
-                    color:#8a8580; margin-top:0.3rem;'>
-            {data['parsed_reasoning']}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    w1  = data["impact_week1"]
-    w12 = data["impact_week12"]
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        css  = "metric-value-down" if w1["difference"] < 0 else "metric-value-up"
-        sign = "+" if w1["difference"] >= 0 else ""
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Week 1 Impact</div>
-            <div class='{css}'>{sign}${w1['difference']:.2f}</div>
-            <div class='metric-sub'>{sign}{w1['pct_change']:.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col2:
-        css  = "metric-value-down" if w12["difference"] < 0 else "metric-value-up"
-        sign = "+" if w12["difference"] >= 0 else ""
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Week 12 Impact</div>
-            <div class='{css}'>{sign}${w12['difference']:.2f}</div>
-            <div class='metric-sub'>{sign}{w12['pct_change']:.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Baseline (Wk 12)</div>
-            <div class='metric-value-up'>${w12['baseline']:.2f}</div>
-            <div class='metric-sub'>no shock applied</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Scenario (Wk 12)</div>
-            <div class='metric-value-up'>${w12['shocked']:.2f}</div>
-            <div class='metric-sub'>with shock applied</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    col_chart, col_delta = st.columns([3, 2])
-
-    with col_chart:
-        st.markdown("<div class='section-label'>Forecast — Baseline vs Scenario</div>",
-                    unsafe_allow_html=True)
-        st.plotly_chart(
-            make_forecast_chart(data["weekly_forecasts"],
-                                data["current_price"],
-                                data["scenario_name"]),
-            use_container_width=True
-        )
-
-    with col_delta:
-        st.markdown("<div class='section-label'>Weekly Price Delta</div>",
-                    unsafe_allow_html=True)
-        st.plotly_chart(make_delta_chart(data["weekly_forecasts"]),
-                        use_container_width=True)
-
-        st.markdown("<div class='section-label' style='margin-top:1rem;'>Shocks Applied</div>",
-                    unsafe_allow_html=True)
-        shock_labels = {
-            "dollar_return": "USD Return", "indpro_return": "Indust. Prod",
-            "inventory_pct": "Inventories", "fed_funds_diff": "Fed Funds",
-            "vix_diff": "VIX"
-        }
-        for var, val in data["shocks_applied"].items():
-            if val != 0:
-                label = shock_labels.get(var, var)
-                sign  = "+" if val > 0 else ""
-                css   = "shock-pos" if val > 0 else "shock-neg"
-                st.markdown(f"""
-                <div class='shock-row'>
-                    <span class='shock-var'>{label}</span>
-                    <span class='{css}'>{sign}{val:.4f}</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Explanation + uncertainty + table
-    col_exp, col_unc = st.columns([3, 2])
-    with col_exp:
-        st.markdown("<div class='section-label'>Economic Explanation</div>",
-                    unsafe_allow_html=True)
-        st.markdown(f"<div class='explanation-box'>{data['explanation']}</div>",
-                    unsafe_allow_html=True)
-    with col_unc:
-        st.markdown("<div class='section-label'>Uncertainty Note</div>",
-                    unsafe_allow_html=True)
-        st.markdown(f"<div class='uncertainty-box'>⚠️ {data['uncertainty_note']}</div>",
-                    unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("<div class='section-label'>Raw Forecast Table</div>",
-                    unsafe_allow_html=True)
-        df = pd.DataFrame(data["weekly_forecasts"])
-        df.columns = ["Week", "Baseline ($)", "Scenario ($)", "Δ ($)"]
-        df = df.set_index("Week")
-        st.dataframe(
-            df.style.format("${:.2f}").applymap(
-                lambda v: "color: #e05252" if v < 0 else "color: #4caf82",
-                subset=["Δ ($)"]
-            ),
-            use_container_width=True, height=250
-        )
 
 
 # ── NEW: Probabilistic results renderer ───────────────────────────
@@ -802,30 +651,7 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Mode toggle ────────────────────────────────────────────────
-    # This is the only new UI element added to the main content area.
-    # Standard = original /simulate → one scenario, one answer
-    # Probabilistic = new /simulate-probabilistic → weighted distribution
-    mode = st.radio(
-        "Simulation Mode",
-        ["Standard — Single Scenario", "Probabilistic — Scenario Distribution"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-    is_probabilistic = "Probabilistic" in mode
-
-    if is_probabilistic:
-        st.markdown("""
-        <div style='font-family:DM Mono,monospace; font-size:0.7rem;
-                    color:#8a8580; margin-bottom:1rem; padding:0.5rem 0.8rem;
-                    border:1px solid #2e2e2e; border-radius:4px;'>
-            🏦  Probabilistic mode — LLM assigns weights across multiple scenarios,
-            then live macro signals (VIX, dollar, inventories) adjust those weights.
-            Output: expected price + confidence range, not a single answer.
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Query input — identical to original ───────────────────────
+    # ── Query input ────────────────────────────────────────────────
     prefill      = st.session_state.get("prefill", "")
     default_text = prefill if prefill else \
         "What happens to oil prices if OPEC cuts production by 10%?"
@@ -844,15 +670,10 @@ def main():
     with col_btn:
         run_clicked = st.button("▶  RUN SIMULATION", disabled=not api_online)
     with col_hint:
-        hint = (
-            "LLM assigns probabilities, macro signals adjust them, SARIMAX runs each"
-            if is_probabilistic else
-            "Ask anything — the AI will map your query to the right scenario"
-        )
-        st.markdown(f"""
+        st.markdown("""
         <div style='font-family:DM Mono,monospace; font-size:0.7rem;
                     color:#8a8580; padding-top:0.6rem;'>
-            {hint}
+            LLM assigns scenario probabilities · macro signals adjust them · SARIMAX runs each
         </div>
         """, unsafe_allow_html=True)
 
@@ -864,41 +685,28 @@ def main():
             st.warning("Please enter a scenario query.")
             return
 
-        spinner_msg = (
-            "⚙️  Running probabilistic simulation across multiple scenarios..."
-            if is_probabilistic else
-            "⚙️  Running simulation..."
-        )
-
-        with st.spinner(spinner_msg):
-            if is_probabilistic:
-                data, error = run_probabilistic_simulation(query, forecast_weeks)
-            else:
-                data, error = run_simulation(query, forecast_weeks)
+        with st.spinner("⚙️  Running probabilistic simulation across multiple scenarios..."):
+            data, error = run_probabilistic_simulation(query, forecast_weeks)
 
         if error:
             st.error(f"Simulation failed: {error}")
             return
 
-        if is_probabilistic:
-            render_probabilistic_results(data)
-        else:
-            render_single_results(data)
+        render_probabilistic_results(data)
 
         # Footer
         st.markdown("---")
-        mode_label = "Probabilistic" if is_probabilistic else "Single Scenario"
         st.markdown(f"""
         <div style='font-family:DM Mono,monospace; font-size:0.65rem;
                     color:#8a8580; text-align:center; padding:0.5rem;'>
             Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} ·
-            SARIMAX(1,1,1)(1,0,1,52) · {mode_label} Mode ·
+            SARIMAX(1,1,1)(1,0,1,52) · Probabilistic Mode ·
             LLaMA 3.3 70B via Groq · Training data: 2006–2022 · MAPE: 15.22%
         </div>
         """, unsafe_allow_html=True)
 
     else:
-        # Empty state — original text, updated with probabilistic examples
+        # Empty state
         st.markdown("""
         <div style='text-align:center; padding:3rem 0; color:#8a8580;'>
             <div style='font-size:4rem; margin-bottom:0.8rem;'>🛢️</div>
@@ -910,14 +718,14 @@ def main():
             <div style='font-family:DM Sans,sans-serif; font-size:0.9rem;
                         max-width:420px; margin:0 auto; line-height:1.7;'>
                 Type any oil market scenario in plain English.
-                Use <strong>Standard</strong> mode for a single deterministic forecast,
-                or <strong>Probabilistic</strong> mode for a weighted distribution
-                across multiple scenarios — like institutional research desks do.
+                The system assigns probabilities across multiple scenarios,
+                adjusts them with live macro signals, and returns an
+                expected price with a confidence range.
             </div>
             <div style='margin-top:1.5rem; font-family:DM Mono,monospace;
                         font-size:0.7rem; color:#3a3a3a;'>
                 "What if OPEC cuts production?"<br>
-                "Simulate a global recession"<br>
+                "What if Russia-Ukraine war escalates?"<br>
                 "What if Middle East tensions rise AND demand grows?"<br>
                 "What happens if the Fed raises rates aggressively?"
             </div>
