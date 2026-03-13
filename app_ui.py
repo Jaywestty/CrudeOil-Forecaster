@@ -97,6 +97,9 @@ st.markdown("""
         border-radius: 6px; padding: 1.5rem; font-size: 0.95rem;
         line-height: 1.75; color: var(--text-main);
         font-family: 'DM Sans', sans-serif; font-weight: 300;
+        word-break: break-word;
+        overflow-wrap: break-word;
+        white-space: pre-wrap;
     }
     .uncertainty-box {
         background: #1a1510; border: 1px solid #3a2e1a;
