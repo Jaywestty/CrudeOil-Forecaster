@@ -99,7 +99,6 @@ st.markdown("""
         font-family: 'DM Sans', sans-serif; font-weight: 300;
         word-break: break-word;
         overflow-wrap: break-word;
-        white-space: pre-wrap;
     }
     .uncertainty-box {
         background: #1a1510; border: 1px solid #3a2e1a;
@@ -529,13 +528,19 @@ def render_probabilistic_results(data):
     with col_exp:
         st.markdown("<div class='section-label'>Economic Explanation</div>",
                     unsafe_allow_html=True)
-        st.markdown(f"<div class='explanation-box'>{data['explanation']}</div>",
+        # Escape dollar signs before injecting into HTML div.
+        # Streamlit's markdown engine treats $...$ as LaTeX math notation
+        # and strips the content, showing a backtick instead.
+        # Replacing $ with the HTML entity &#36; bypasses this completely.
+        safe_explanation = data["explanation"].replace("$", "&#36;")
+        st.markdown(f"<div class='explanation-box'>{safe_explanation}</div>",
                     unsafe_allow_html=True)
 
     with col_unc:
         st.markdown("<div class='section-label'>Uncertainty Note</div>",
                     unsafe_allow_html=True)
-        st.markdown(f"<div class='uncertainty-box'>⚠️ {data['uncertainty_note']}</div>",
+        safe_uncertainty = data["uncertainty_note"].replace("$", "&#36;")
+        st.markdown(f"<div class='uncertainty-box'>⚠️ {safe_uncertainty}</div>",
                     unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
