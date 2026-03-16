@@ -168,12 +168,28 @@ def check_api_health():
     except:
         return False
 
+@st.cache_data(ttl=300)
 def get_current_price():
+    """
+    Fetch current Brent price from the API.
+
+    @st.cache_data(ttl=300):
+      Streamlit reruns this entire script on every widget interaction.
+      Without caching, get_current_price() would call the API dozens of
+      times per session. The cache holds the result for 300 seconds (5 min)
+      then refreshes automatically — price stays current without hammering
+      the API on every click.
+
+    Timeout is 30s — the /current-price endpoint calls FRED internally
+    which can take a few seconds on cold API starts.
+    """
     try:
-        r = requests.get(f"{API_URL}/current-price", timeout=5)
-        return r.json()
+        r = requests.get(f"{API_URL}/current-price", timeout=30)
+        if r.status_code == 200:
+            return r.json()
+        return {"price": "N/A", "date": "N/A", "unit": "USD/barrel", "source": "dataset fallback"}
     except:
-        return {"price": "N/A", "date": "N/A", "unit": "USD/barrel"}
+        return {"price": "N/A", "date": "N/A", "unit": "USD/barrel", "source": "dataset fallback"}
 
 def get_scenarios():
     try:
