@@ -1,6 +1,6 @@
 # 🛢️ Crude Oil Price Scenario Forecaster
 
-> **Macroeconomic simulation engine for Brent crude oil pricing — powered by SARIMAX econometrics and LLaMA 3.3 via Groq.**
+> **Probabilistic macroeconomic simulation engine for Brent crude oil pricing — powered by SARIMAX econometrics, LLaMA 3.3, and live macro signal adjustment.**
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)](https://crude-forecaster.streamlit.app/)
 [![API Docs](https://img.shields.io/badge/API%20Docs-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://crudeoil-forecaster.onrender.com/docs)
@@ -11,82 +11,185 @@
 
 | Service | URL | Description |
 |---|---|---|
-| 🖥️ Frontend (Streamlit) | [crude-forecaster.streamlit.app](https://crude-forecaster.streamlit.app/) | Interactive scenario simulation UI |
+| 🖥️ Frontend (Streamlit) | [crude-forecaster.streamlit.app](https://crude-forecaster.streamlit.app/) | Interactive probabilistic simulation UI |
 | ⚙️ Backend (FastAPI) | [crudeoil-forecaster.onrender.com](https://crudeoil-forecaster.onrender.com/) | REST API + auto-generated docs at `/docs` |
 
-> ⚠️ **Note on cold starts:** The API is hosted on Render's free tier, which **spins down after 15 minutes of inactivity** to save resources. The first request after a period of sleep may take **30–60 seconds** to wake up — this is expected behaviour, not a bug. Just wait a moment and it will respond normally.
+> ⚠️ **Cold start notice:** The API runs on Render's free tier and spins down after 15 minutes of inactivity. The first request after a period of sleep takes **30–60 seconds** to wake up — this is expected. A keepalive worker pings the API every 280 seconds to minimise this during active use.
 
 ---
 
 ## 📌 What This Project Does
 
-This system answers questions like:
+This system answers oil market scenario questions in plain English and returns a **probability-weighted price distribution** — not a single deterministic answer.
 
-- *"What happens to oil prices if OPEC cuts production by 10%?"*
-- *"Simulate a global recession scenario"*
-- *"What if the US Federal Reserve raises interest rates aggressively?"*
-- *"What if there's a geopolitical conflict in the Middle East?"*
+Instead of saying:
+> *"Oil will rise by $4 under this scenario"*
 
-You type a natural language question. The system:
-1. Uses **LLaMA 3.3 70B** (via Groq) to parse your intent into structured economic shock parameters
-2. Injects those shocks into a **SARIMAX econometric model** trained on 20 years of weekly oil market data
-3. Generates a **baseline forecast** (what happens with no shock) vs a **counterfactual forecast** (what happens with your scenario)
-4. Uses the LLM again to explain the results in plain economic language
+It says:
+> *"Expected price: $87. Range: $80–$93. Primary driver: Geopolitical Tension (55% weight), adjusted by current VIX and inventory signals."*
+
+That difference is how professional energy trading desks actually think.
+
+**Example queries the system handles:**
+
+- *"What happens if OPEC cuts production by 10%?"*
+- *"If Russia-Ukraine tensions escalate, what is the price range?"*
+- *"What if global economic slowdown coincides with OPEC cuts?"*
+- *"How does a strong US dollar affect crude oil prices?"*
+- *"What is the expected price range for next quarter?"*
 
 ---
 
 ## 🏗️ System Architecture
 
 ```
-User types scenario query (natural language)
-            │
-            ▼
-   ┌─────────────────┐
-   │  Streamlit UI   │  ← crude-forecaster.streamlit.app
-   │   (Frontend)    │
-   └────────┬────────┘
-            │  HTTP POST /simulate
-            ▼
-   ┌─────────────────┐
-   │   FastAPI API   │  ← crudeoil-forecaster.onrender.com
-   │   (Backend)     │
-   └────────┬────────┘
-            │
-     ┌──────┴──────┐
-     ▼             ▼
-┌─────────┐  ┌──────────┐
-│ SARIMAX │  │  Groq    │
-│  Model  │  │ LLaMA 3.3│
-│ (.pkl)  │  │  (LLM)   │
-└─────────┘  └──────────┘
-     │             │
-     └──────┬──────┘
-            ▼
-   Forecast + Explanation
-   returned to Streamlit UI
+User types scenario query (plain English)
+              │
+              ▼
+     ┌─────────────────┐
+     │  Streamlit UI   │  ← crude-forecaster.streamlit.app
+     └────────┬────────┘
+              │  POST /simulate-probabilistic
+              ▼
+     ┌─────────────────┐
+     │   FastAPI API   │  ← crudeoil-forecaster.onrender.com
+     └────────┬────────┘
+              │
+    ┌─────────┴──────────┐
+    ▼                    ▼
+┌──────────────┐   ┌──────────────┐
+│ LLaMA 3.3    │   │   SARIMAX    │
+│ (Groq)       │   │   Model      │
+│              │   │   (.pkl)     │
+│ Assigns      │   │              │
+│ probability  │   │ Runs once    │
+│ weights to   │   │ per scenario │
+│ scenarios    │   │ (no retrain) │
+└──────┬───────┘   └──────┬───────┘
+       │                  │
+       ▼                  ▼
+┌─────────────────────────────────┐
+│   Macro Signal Adjustment Layer │
+│                                 │
+│  Live VIX, dollar, inventory    │
+│  signals shift LLM probabilities│
+│  based on current market state  │
+└─────────────────────┬───────────┘
+                      │
+                      ▼
+        Weighted forecast distribution
+        Expected price + range
+        Scenario breakdown + explanation
+              │
+              ▼
+     ┌─────────────────┐
+     │  Streamlit UI   │
+     │  renders result │
+     └─────────────────┘
 ```
 
 ---
 
-## 🧠 Why SARIMAX? (Modeling Decision)
+## 🧠 The Probabilistic Engine — How It Works
 
-Three models were considered. Here's why SARIMAX won:
+This is the core upgrade that separates the system from a standard single-scenario simulator.
+
+### Step 1 — LLM Probability Assignment
+
+Instead of picking one best-fit scenario, LLaMA 3.3 reads the query and distributes probability weights across all relevant scenarios:
+
+```
+Query: "What if Middle East tensions rise while demand also grows?"
+
+LLM returns:
+  {
+    "geopolitical_tension": 0.55,
+    "demand_boom":          0.30,
+    "opec_cut":             0.15
+  }
+```
+
+### Step 2 — Macro Signal Adjustment
+
+The LLM estimates are then adjusted using **live macroeconomic signals** pulled from the dataset — real data, not guesses:
+
+```
+Current conditions read from dataset:
+  VIX level, dollar direction, inventory trend, Fed funds
+
+Adjustment rules:
+  VIX > 25      → boost geopolitical + recession weight
+  VIX < 15      → boost demand boom weight
+  Dollar rising → boost rate hike + recession weight
+  Dollar falling → boost demand boom + OPEC cut weight
+  Inventories ↓  → boost OPEC cut + geopolitical weight
+  Inventories ↑  → boost recession weight
+
+After adjustment, weights are renormalised to sum to 1.0
+```
+
+### Step 3 — SARIMAX Runs Per Scenario
+
+The SARIMAX model runs **once per scenario** — same trained model, different exogenous inputs each time. No retraining required:
+
+```
+Scenario A (geopolitical, 55%) → SARIMAX → Week-12 price: $91
+Scenario B (demand boom, 30%)  → SARIMAX → Week-12 price: $88
+Scenario C (opec cut, 15%)     → SARIMAX → Week-12 price: $89
+```
+
+### Step 4 — Weighted Expected Price
+
+```
+Expected price = (0.55 × $91) + (0.30 × $88) + (0.15 × $89)
+               = $90.00
+
+Range: $88 – $91
+Primary driver: Geopolitical Tension (55%)
+```
+
+### Step 5 — Direction Correction
+
+The SARIMAX model was trained on 2006–2022 data, a period where high-VIX episodes coincided with demand collapses (2008 crash, 2014–2016 glut). This means the model sometimes produces counterintuitive price directions for supply shock scenarios.
+
+A post-processing direction correction is applied after each scenario run:
+
+```python
+BULLISH_SCENARIOS = {"opec_cut", "geopolitical_tension", "demand_boom"}
+BEARISH_SCENARIOS = {"global_recession", "rate_hike"}
+
+# If a bullish scenario produced a price DROP, mirror it:
+# corrected = 2 × baseline - shocked
+# This preserves the model's magnitude estimate
+# while enforcing the correct economic direction.
+```
+
+### Step 6 — LLM Explanation
+
+LLaMA 3.3 reads the actual model numbers and generates an institutional-style explanation covering the expected price, what drives the low vs high end of the range, and how macro signals shifted the probability weights.
+
+---
+
+## 🧮 Why SARIMAX? (Modeling Decision)
 
 | Model | Strength | Why Not Used |
 |---|---|---|
-| **SARIMA** | Clean time series structure | No external variable support — can't inject macro shocks |
-| **XGBoost** | Powerful, wins Kaggle competitions | Treats observations as independent, no temporal structure, no counterfactual mechanism |
-| **Prophet** | Great for calendar seasonality | Built for daily business metrics, poor exogenous variable support, no economic interpretability |
+| **SARIMA** | Clean time series structure | No external variable support — cannot inject macro shocks |
+| **XGBoost** | Powerful pattern recognition | Treats observations as independent, no temporal structure, no counterfactual mechanism |
+| **Prophet** | Calendar seasonality | Built for daily business metrics, weak exogenous support, no economic interpretability |
 | ✅ **SARIMAX** | Time structure + external variables + interpretable coefficients | **Chosen** |
 
-The **X in SARIMAX** (eXogenous variables) is the entire reason it was chosen. It allows injecting macro shocks — dollar returns, inventory changes, VIX spikes — directly into the forecast. Without the X, scenario simulation is impossible.
+The **X in SARIMAX** (eXogenous variables) is the critical design choice. It allows five macro drivers to be injected directly into the forecast — without it, scenario simulation is impossible.
 
-**Key model coefficient (defend this in interview):**
+**Key model coefficient:**
 ```
-dollar_return = -107.80 (p < 0.001)
-→ "A 1% appreciation in the US dollar
-   corresponds to a $1.08/barrel drop in Brent crude"
-→ This is economically interpretable and statistically significant
+dollar_return coefficient = -107.80  (p < 0.001)
+
+Interpretation:
+  A 1% appreciation in the US dollar index
+  corresponds to a $1.08/barrel drop in Brent crude.
+  Economically interpretable. Statistically significant.
+  Directionally consistent with oil being USD-denominated.
 ```
 
 ---
@@ -94,18 +197,17 @@ dollar_return = -107.80 (p < 0.001)
 ## 📊 Model Specification
 
 ```
-Model:          SARIMAX(1, 1, 1)(1, 0, 1, 52)
-                 │  │  │   │  │  │   52 = weekly seasonality
-                 │  │  │   └──┴──┘ seasonal AR, I, MA terms
-                 └──┴──┘ non-seasonal AR, differencing, MA terms
+Model:         SARIMAX(1, 1, 1)(1, 0, 1, 52)
+                │  │  │   │  │  │   52 = weekly seasonality
+                │  │  │   └──┴──┘ seasonal AR, I, MA terms
+                └──┴──┘ non-seasonal AR, differencing, MA terms
 
-Training data:  2006 – 2022  (80% of 1,043 weekly observations)
-Test period:    2022 – 2024  (20% holdout)
-Validation:     Rolling window cross-validation (10 folds)
-Test MAPE:      15.22%
-AIC:            Minimized via order selection
+Training data: 2006 – 2022  (80% of 1,043 weekly observations)
+Test period:   2022 – 2024  (20% holdout)
+Validation:    Rolling window cross-validation (10 folds)
+Test MAPE:     15.22%
 
-Exogenous variables (the 5 macro drivers):
+Exogenous variables (5 macro drivers):
   dollar_return   → DXY US Dollar Index weekly return
   indpro_return   → US Industrial Production weekly change
   inventory_pct   → US crude oil inventory % change (EIA)
@@ -113,38 +215,47 @@ Exogenous variables (the 5 macro drivers):
   vix_diff        → CBOE VIX (fear index) weekly difference
 ```
 
+**Note on MAPE:** 15.22% on weekly crude oil is reasonable. Oil is one of the most volatile commodities in the world — driven by geopolitical events, OPEC decisions, and macro shocks that no statistical model can fully anticipate. The system's value is in scenario comparison and directional analysis, not point forecasting.
+
 ---
 
-## 🔄 Simulation Pipeline (Step by Step)
-
-When you click **RUN SIMULATION**, here is exactly what happens under the hood:
+## 🔄 Probabilistic Simulation Pipeline
 
 ```
-Step 1 — LLM Query Parsing
-  Your natural language query →
-  Groq API (LLaMA 3.3 70B) →
-  Structured JSON: { scenario_key, magnitude_modifier, confidence, reasoning }
+Step 1 — LLM Probability Parsing
+  Natural language query →
+  LLaMA 3.3 (Groq) →
+  { scenario_key: probability_weight } across relevant scenarios
 
-Step 2 — Shock Construction
-  Predefined scenario shocks × magnitude_modifier =
-  calibrated shock vector for each of the 5 macro variables
+Step 2 — Macro Signal Adjustment
+  Read live VIX, dollar, inventory, Fed funds from dataset →
+  Adjust LLM probabilities using real market signals →
+  Renormalise weights to sum to 1.0
 
 Step 3 — Baseline Forecast
-  SARIMAX model → forecast with ZERO shocks applied →
-  "what happens if nothing changes"
+  SARIMAX → forecast with ZERO shocks →
+  "What happens if nothing changes"
 
-Step 4 — Counterfactual Forecast
-  SARIMAX model → same forecast WITH shocks injected →
-  "what happens under your scenario"
+Step 4 — Per-Scenario SARIMAX Forecasts
+  For each scenario with weight > 5%:
+    Build exogenous shock matrix →
+    SARIMAX → shocked forecast →
+    Apply direction correction if needed
 
-Step 5 — LLM Explanation
-  Both forecasts + scenario metadata →
-  Groq API →
-  Plain English economic explanation + uncertainty note
+Step 5 — Weighted Distribution Assembly
+  expected_price[t] = Σ (probability_i × price_i[t]) for each week
+  price_range = [min scenario week-12, max scenario week-12]
+  Safety clamp: expected price always sits inside range
 
-Step 6 — Response Assembly
-  Weekly forecast table, impact at Week 1 and Week 12,
-  shock breakdown, explanation → returned to Streamlit UI
+Step 6 — LLM Explanation
+  Actual model numbers + scenario breakdown →
+  LLaMA 3.3 →
+  Institutional research note: expected price, range
+  interpretation, macro signal effects
+
+Step 7 — Response to UI
+  Expected price, range, scenario breakdown,
+  probability shifts, fan chart data, explanation
 ```
 
 ---
@@ -155,12 +266,12 @@ Step 6 — Response Assembly
 crude-oil-forecaster/
 │
 ├── api.py                  # FastAPI backend — all REST endpoints
-├── streamlit_app.py        # Streamlit frontend — the UI
-├── scenario_engine.py      # Core simulation logic — runs SARIMAX
-├── llm_explainer.py        # Groq/LLaMA interface — parsing + explanation
+├── streamlit_app.py        # Streamlit frontend — probabilistic UI
+├── scenario_engine.py      # Core engine — SARIMAX + direction correction
+│                           # + macro probability adjustment
+├── llm_explainer.py        # Groq/LLaMA — probabilistic parsing + explanation
 ├── utils.py                # Model loading, data helpers
 ├── train.py                # Model training script (runs on Render build)
-│
 ├── models/
 │   └── sarimax_model.pkl   # Generated at build time — not in GitHub
 │
@@ -168,8 +279,8 @@ crude-oil-forecaster/
 │   ├── oil_macro_weekly.csv        # Raw weekly data (2004–2024)
 │   └── oil_macro_transformed.csv  # Stationary transformed features
 │
-├── requirements.txt        # Python dependencies (pinned for stability)
-├── .python-version         # Pins Python 3.11.8 — fixes Render build issues
+├── requirements.txt        # Pinned dependencies (Python 3.11 stable)
+├── .python-version         # Pins Python 3.11.8 — fixes Render build
 └── .env                    # Local secrets (never committed)
 ```
 
@@ -182,31 +293,44 @@ Base URL: `https://crudeoil-forecaster.onrender.com`
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Health check |
-| `GET` | `/docs` | Interactive API documentation (Swagger UI) |
-| `GET` | `/scenarios` | List all predefined scenarios |
-| `GET` | `/current-price` | Latest Brent crude price from dataset |
-| `POST` | `/simulate` | **Main endpoint** — run full NL simulation |
-| `POST` | `/simulate-direct` | Run simulation by scenario key (bypasses LLM) |
+| `GET` | `/health` | Keepalive ping endpoint |
+| `GET` | `/docs` | Interactive Swagger UI |
+| `GET` | `/scenarios` | List all predefined scenario keys |
+| `GET` | `/current-price` | Latest Brent price from dataset |
+| `POST` | `/simulate` | Single-scenario simulation (deterministic) |
+| `POST` | `/simulate-probabilistic` | **Main endpoint** — probabilistic multi-scenario simulation |
+| `POST` | `/simulate-direct` | Run by scenario key — bypasses LLM parsing |
 
-### Example Request
+### Example — Probabilistic Simulation Request
 
 ```bash
-curl -X POST "https://crudeoil-forecaster.onrender.com/simulate" \
+curl -X POST "https://crudeoil-forecaster.onrender.com/simulate-probabilistic" \
   -H "Content-Type: application/json" \
-  -d '{"query": "What if OPEC cuts production by 10%?", "forecast_weeks": 12}'
+  -d '{"query": "What if Middle East tensions rise while demand also grows?", "forecast_weeks": 12}'
 ```
 
 ### Example Response (abbreviated)
 
 ```json
 {
-  "scenario_name":     "OPEC Production Cut",
-  "current_price":     74.23,
-  "parsed_confidence": "high",
-  "impact_week1":  { "difference": 3.42, "pct_change": 4.61 },
-  "impact_week12": { "difference": 7.18, "pct_change": 9.67 },
-  "explanation":   "An OPEC production cut of this magnitude...",
-  "weekly_forecasts": [...]
+  "price_expected": 87.00,
+  "price_low": 80.12,
+  "price_high": 93.45,
+  "primary_driver": "geopolitical_tension",
+  "primary_driver_name": "Major Geopolitical Tension",
+  "scenario_breakdown": {
+    "geopolitical_tension": { "probability": 0.55, "week12_price": 91.20 },
+    "demand_boom":           { "probability": 0.30, "week12_price": 88.40 },
+    "opec_cut":              { "probability": 0.15, "week12_price": 89.10 }
+  },
+  "adjusted_probabilities": { ... },
+  "macro_adjustments": {
+    "vix_high_geo": "VIX elevated → geopolitical weight +30%"
+  },
+  "weighted_forecast": [84.2, 85.1, 85.8, ...],
+  "baseline_forecast": [82.6, 82.6, 82.6, ...],
+  "explanation": "Brent crude is expected to reach $87.00/barrel...",
+  "uncertainty_note": "Scenario probabilities are LLM-estimated..."
 }
 ```
 
@@ -217,8 +341,8 @@ curl -X POST "https://crudeoil-forecaster.onrender.com/simulate" \
 ### Prerequisites
 
 - Python 3.11
-- A [Groq API key](https://console.groq.com) (free)
-- A [FRED API key](https://fredaccount.stlouisfed.org) (free)
+- [Groq API key](https://console.groq.com) (free)
+- [FRED API key](https://fredaccount.stlouisfed.org) (free)
 
 ### Installation
 
@@ -229,27 +353,26 @@ cd CrudeOil-Forecaster
 
 # 2. Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate       # Windows: venv\Scripts\activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Set up environment variables
-# Create a .env file in the project root:
+# 4. Create .env file
 GROQ_API_KEY=your_groq_key_here
 FRED_API_KEY=your_fred_key_here
 
-# 5. Train the model (only needed once)
+# 5. Train the model (once)
 python train.py
 
 # 6. Start the FastAPI backend
 uvicorn api:app --reload
-# API now running at http://localhost:8000
-# Docs at http://localhost:8000/docs
+# API: http://localhost:8000
+# Docs: http://localhost:8000/docs
 
 # 7. In a new terminal, start the Streamlit frontend
 streamlit run streamlit_app.py
-# UI now running at http://localhost:8501
+# UI: http://localhost:8501
 ```
 
 ---
@@ -270,21 +393,23 @@ streamlit run streamlit_app.py
 ## 🧪 Model Validation
 
 ```
-Validation strategy: Rolling window cross-validation
-  10 folds across the test period (2022–2024)
+Strategy: Rolling window cross-validation
+  10 folds across test period (2022–2024)
   Each fold trains on all data up to that point
   Forecasts 12 weeks ahead out-of-sample
 
 Results:
   Test MAPE:  15.22%
-  Benchmark:  ARIMA baseline (univariate, no macro variables)
-  SARIMAX outperforms ARIMA baseline on directional accuracy
+  Benchmark:  ARIMA (univariate, no macro variables)
+  SARIMAX outperforms ARIMA on directional accuracy
   and responds meaningfully to macro variable shocks
 
-Note on MAPE: 15.22% on weekly oil prices is reasonable.
-Oil is one of the most volatile commodities in the world —
-affected by geopolitical events, OPEC decisions, and
-macroeconomic shocks that no statistical model can fully anticipate.
+Known limitation:
+  The model learned from 2006–2022 data where high-VIX
+  episodes coincided with demand collapses (2008 crash,
+  2014–2016 glut). This causes counterintuitive price
+  direction for supply shock scenarios, addressed via
+  a post-processing direction correction layer.
 ```
 
 ---
@@ -295,57 +420,30 @@ macroeconomic shocks that no statistical model can fully anticipate.
 
 ```
 Platform:       Render Web Service (Free Tier)
-Runtime:        Python 3.11
+Runtime:        Python 3.11.8 (pinned via .python-version)
 Build Command:  pip install -r requirements.txt && python train.py
 Start Command:  uvicorn api:app --host 0.0.0.0 --port $PORT
-Model Storage:  Trained fresh on every deploy — no binary in GitHub
+Model storage:  Trained fresh on every deploy — no binary in GitHub
 Auto-deploy:    Yes — triggers on every push to main branch
 
-Build Command explained:
-  pip install -r requirements.txt   → install dependencies
-  && python train.py                → train SARIMAX, save .pkl to disk
-  &&                                → only trains if install succeeded
+Why train on deploy:
+  SARIMAX model = ~300MB → above GitHub 100MB hard limit
+  Retrained on each deploy → model always reflects latest code
+  Trade-off: adds 5–10 minutes to build time
 
-Free Tier Behaviour:
-  ✅ 512MB RAM — sufficient for SARIMAX model in memory
-  ✅ Shared CPU — adequate for inference
-  ⚠️  Spins down after 15 min of inactivity
-  ⚠️  Cold start takes 30–60 seconds to wake up
-  ⚠️  Build takes ~5–10 min longer due to training step
+Free Tier behaviour:
+  ✅ 512MB RAM — sufficient for SARIMAX in memory
+  ⚠️  Spins down after 15 min of inactivity (cold start)
+  ⚠️  Cold start: 30–60 seconds to wake up
 ```
 
 ### Frontend — Streamlit Cloud
 
 ```
-Platform:       Streamlit Community Cloud (Free)
-Runtime:        Python 3.11
-Entry point:    streamlit_app.py
-Secrets:        API_URL set via Streamlit Cloud dashboard
-Auto-deploy:    Yes — triggers on every push to main branch
-```
-
-### Model Training on Render
-
-```
-Problem:  SARIMAX model = 300MB — too large to store in GitHub
-Solution: Train the model fresh on every Render deploy
-
-How it works:
-  Build Command runs two steps in sequence:
-    pip install -r requirements.txt   ← install all dependencies
-    && python train.py                ← train SARIMAX and save .pkl
-
-  The && means: "only run train.py if pip install succeeded"
-
-  Render trains the model once per deploy, saves it to disk,
-  and the running API loads it from there.
-  No large files in GitHub. No LFS needed.
-
-Trade-off:
-  ✅ Clean — no binary files in version control
-  ✅ Model always reflects the latest data and code
-  ⚠️  Adds ~5–10 minutes to build time on each deploy
-  ⚠️  Depends on FRED/EIA API availability at build time
+Platform:    Streamlit Community Cloud (Free)
+Entry point: streamlit_app.py
+Secrets:     API_URL set via Streamlit Cloud dashboard
+Auto-deploy: Yes — triggers on every push to main branch
 ```
 
 ---
@@ -354,8 +452,8 @@ Trade-off:
 
 | Variable | Where to Set | Description |
 |---|---|---|
-| `GROQ_API_KEY` | Render dashboard → Environment | LLaMA 3.3 access via Groq |
-| `FRED_API_KEY` | Render dashboard → Environment | FRED macroeconomic data |
+| `GROQ_API_KEY` | Render → Environment | LLaMA 3.3 access via Groq |
+| `FRED_API_KEY` | Render → Environment | FRED macroeconomic data |
 | `API_URL` | Streamlit Cloud → Secrets | Render backend URL |
 
 **Never commit `.env` to GitHub.** It is in `.gitignore`.
@@ -364,30 +462,56 @@ Trade-off:
 
 ## 💬 Predefined Scenarios
 
-| Scenario Key | Name | Description |
-|---|---|---|
-| `opec_cut` | OPEC Production Cut | OPEC reduces output, supply tightens |
-| `us_recession` | US Recession | Demand collapses, industrial output drops |
-| `dollar_surge` | Dollar Surge | USD strengthens, oil becomes expensive to import |
-| `middle_east_conflict` | Middle East Conflict | Supply disruption risk premium spikes |
-| `fed_hike` | Fed Rate Hike | Higher rates slow growth, reduce demand |
-| `shale_boom` | US Shale Boom | Supply surge from US production |
+| Scenario Key | Name | Direction | Primary Shock |
+|---|---|---|---|
+| `opec_cut` | OPEC Production Cut | 📈 Bullish | Dollar weakens, inventories draw |
+| `geopolitical_tension` | Major Geopolitical Tension | 📈 Bullish | Supply disruption, hoarding |
+| `demand_boom` | Global Demand Boom | 📈 Bullish | Industrial surge, inventories draw |
+| `global_recession` | Global Recession | 📉 Bearish | Industrial collapse, inventory build |
+| `rate_hike` | Aggressive Fed Rate Hike | 📉 Bearish | Dollar strengthens, demand slows |
 
 ---
 
 ## 🧩 Technical Decisions & Trade-offs
 
-**Why not XGBoost or Prophet?**
-XGBoost treats observations as independent rows — it has no concept of time order or seasonality. Prophet is designed for daily business metrics with calendar patterns (Black Friday, Christmas). Neither provides a native mechanism for injecting economic shocks into future forecasts. SARIMAX was built for exactly this problem.
+**Why probabilistic instead of single-scenario?**
+Real oil market queries often involve multiple competing forces simultaneously — "OPEC cuts while demand grows" involves both supply tightening and demand pull. A single scenario picks one and ignores the other. A probability distribution weights both, produces a meaningful expected price, and exposes the uncertainty range. This is how energy trading desks actually think.
 
-**Why separate frontend and backend?**
-Decoupling the API from the UI means the API can be called by any client — another frontend, a mobile app, a Jupyter notebook, or a direct curl command. This is standard production architecture. The Streamlit UI is one consumer of the API, not tightly coupled to it.
+**Why LLM probability assignment + macro signal adjustment?**
+The LLM interprets the user's language and assigns base probabilities. But language alone misses what the market is currently pricing — a geopolitical question asked during a calm low-VIX period should carry different weights than the same question during market panic. The macro adjustment layer bridges that gap using real data, making the system partially data-driven rather than purely LLM-dependent.
+
+**Why post-processing direction correction?**
+The SARIMAX model learned from 2006–2022 data. During that window, supply disruption signals often preceded demand collapses (2008 global crisis, 2014 glut). This means the model associates supply shock signals with price decreases — the opposite of economic theory. Rather than retraining with different data (which would lose 17 years of calibration), a direction correction mirrors the price impact around the baseline for scenarios where the model output contradicts economic fundamentals. The model's magnitude estimate is preserved; only the direction is corrected when wrong.
+
+**Why SARIMAX over XGBoost or Prophet?**
+XGBoost treats observations as independent rows — it has no concept of time order, cannot model seasonality, and has no native mechanism for injecting future exogenous shocks into a forecast. Prophet is built for daily business metrics with calendar patterns. SARIMAX was specifically designed for multivariate time series with external regressors — exactly what macro-driven oil price simulation requires.
 
 **Why Groq for the LLM?**
-Groq's inference hardware (LPU) is significantly faster than standard GPU inference — LLaMA 3.3 70B responses come back in under 2 seconds. For a real-time UI, this latency matters. OpenAI GPT-4 at similar capability costs more and responds slower on free tiers.
+Groq's LPU inference hardware returns LLaMA 3.3 70B responses in under 2 seconds. For a real-time UI where the LLM is called twice per simulation (once for parsing, once for explanation), latency matters. OpenAI GPT-4 at comparable capability costs more and responds slower on free tiers.
 
-**Why train the model on Render instead of committing it to GitHub?**
-The trained SARIMAX model file is 300MB — well above GitHub's 100MB hard limit. Rather than using Git LFS or S3, the model is retrained fresh on every Render deploy via `pip install -r requirements.txt && python train.py` in the build command. This keeps the repository clean (no binary files in version control), ensures the model always reflects the latest code, and avoids any external storage dependency. The trade-off is a longer build time (~5–10 minutes), which is acceptable for a deployment that rarely changes.
+**Why train the model on Render instead of committing it?**
+The trained SARIMAX model is ~300MB — above GitHub's 100MB hard limit. Rather than using Git LFS or external storage, the model is retrained on every Render deploy via the build command. This keeps the repository clean, ensures the model always reflects the latest code and data, and avoids external storage dependencies. Trade-off: adds 5–10 minutes to build time per deploy.
+
+---
+
+## 📝 Known Limitations & Future Improvements
+
+```
+Current limitations:
+  - Scenario probabilities are LLM-estimated, not derived from
+    options market implied volatility or historical scenario frequencies
+  - Model trained to 2022 — does not know post-2022 market structure
+  - 12-week forecast horizon — longer horizons lose reliability
+  - Five fixed scenarios — cannot model novel events without mapping
+    to one of the five (e.g. carbon taxes, SPR releases)
+  - Direction correction is a heuristic, not a structural fix
+
+Natural next upgrades:
+  - Duration profiles: short-war vs prolonged-war shock decay
+  - Options-implied probability calibration
+  - Regime detection model for automatic macro context
+  - Retrain on data through 2024
+```
 
 ---
 
@@ -397,4 +521,4 @@ MIT License — free to use, modify, and distribute.
 
 ---
 
-*Built as a technical assessment — demonstrating end-to-end ML system design from data ingestion through econometric modeling, LLM integration, API development, and cloud deployment.*
+*Built as a technical assessment demonstrating end-to-end ML system design: data ingestion, econometric modeling, probabilistic simulation engine, LLM integration, macro signal adjustment, REST API, and cloud deployment.*
