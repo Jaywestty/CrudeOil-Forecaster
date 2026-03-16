@@ -605,6 +605,13 @@ def main():
 
         st.markdown("---")
 
+        # Show a source indicator so the user knows if the price is
+        # live from FRED or a fallback from the static dataset.
+        source       = price_data.get("source", "dataset")
+        is_live      = "FRED" in source
+        source_color = "#4caf82" if is_live else "#8a8580"
+        source_label = "● live" if is_live else "● dataset fallback"
+
         st.markdown(f"""
         <div class='price-card'>
             <div class='price-label'>Brent Crude — Latest</div>
@@ -614,6 +621,11 @@ def main():
             <div style='font-family:DM Mono,monospace; font-size:0.65rem;
                         color:#8a8580; margin-top:0.3rem;'>
                 as of {price_data['date']}
+            </div>
+            <div style='font-family:DM Mono,monospace; font-size:0.6rem;
+                        color:{source_color}; margin-top:0.2rem;
+                        letter-spacing:1px;'>
+                {source_label}
             </div>
         </div>
         """, unsafe_allow_html=True)

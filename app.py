@@ -3,8 +3,58 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import traceback
+import os
 from scenario_engine import ScenarioEngine, SCENARIOS
 from llm_explainer import LLMExplainer
+
+
+# ── Live Brent Price from FRED ─────────────────────────────────────
+# The SARIMAX model uses the static dataset for its baseline forecast.
+# But the price displayed in the UI sidebar should be the REAL current
+# market price — not the last row of a CSV that was pulled months ago.
+#
+# We fetch this from FRED (Federal Reserve Economic Data) using the
+# DCOILBRENTEU series — the same source used to build the training data.
+# This call runs once per /current-price request (lightweight).
+#
+# If the FRED call fails for any reason (no API key, network issue,
+# FRED outage), we fall back to the dataset price with a clear label
+# so the user knows what they're looking at.
+
+def fetch_live_brent_price():
+    """
+    Fetch the latest Brent crude spot price from FRED.
+
+    FRED series: DCOILBRENTEU
+      - Daily Brent crude oil price in USD per barrel
+      - Published by the U.S. Energy Information Administration
+      - Updated on business days with 1-day lag
+      - Same primary source used to build the training dataset
+
+    Returns:
+        tuple: (price: float, date: str, source: str)
+               source is "FRED live" on success, "dataset" on fallback
+    """
+    try:
+        from fredapi import Fred
+        fred   = Fred(api_key=os.getenv("FRED_API_KEY"))
+        series = fred.get_series("DCOILBRENTEU")
+
+        # FRED sometimes has trailing NaN values for the most recent days
+        # (data not yet published). Drop them to get the last real value.
+        series = series.dropna()
+
+        price = round(float(series.iloc[-1]), 2)
+        date  = series.index[-1].strftime("%Y-%m-%d")
+
+        print(f"✅ Live Brent price fetched: ${price} as of {date}")
+        return price, date, "FRED live"
+
+    except Exception as e:
+        # Any failure — missing API key, network issue, FRED outage —
+        # is handled silently. The caller decides the fallback.
+        print(f"  Live price fetch failed: {e}")
+        return None, None, "dataset"
 
 # ── App Initialization ─────────────────────────────────────────────
 app = FastAPI(
@@ -152,11 +202,35 @@ def list_scenarios():
 
 @app.get("/current-price")
 def get_current_price():
-    """Return the most recent Brent crude oil price in the dataset."""
+    """
+    Return the current Brent crude oil price.
+
+    Priority:
+      1. Live price from FRED API (DCOILBRENTEU series) — real market price
+      2. Fallback: last row of training dataset — if FRED call fails
+
+    The live price is DISPLAY ONLY — it does not affect the SARIMAX
+    model's baseline forecast, which always uses the training dataset.
+    This distinction is intentional: the model was calibrated on dataset
+    values, and changing its baseline input would alter forecast results.
+    The sidebar price is purely informational.
+    """
+    live_price, live_date, source = fetch_live_brent_price()
+
+    if live_price:
+        return {
+            "price":  live_price,
+            "date":   live_date,
+            "unit":   "USD/barrel",
+            "source": source
+        }
+
+    # Fallback to dataset price with honest label
     return {
-        "price": round(engine.latest['brent_price'], 2),
-        "date":  str(engine.weekly_data.index[-1].date()),
-        "unit":  "USD/barrel"
+        "price":  round(engine.latest['brent_price'], 2),
+        "date":   str(engine.weekly_data.index[-1].date()),
+        "unit":   "USD/barrel",
+        "source": "dataset (FRED unavailable)"
     }
 
 
