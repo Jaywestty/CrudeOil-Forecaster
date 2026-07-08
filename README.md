@@ -414,6 +414,99 @@ Known limitation:
 
 ---
 
+## 📖 Reading the Output Numbers
+
+When the system returns a result, four numbers appear. Here is exactly what each one means and how they relate to each other.
+
+**Example output:**
+```
+Live Price (sidebar):   $94.00
+Baseline Wk 12:         $82.63
+Expected Price Wk 12:   $87.23    (+$4.60 vs baseline)
+Forecast Range:         $81 – $90
+```
+
+### What each number is
+
+```
+$94.00  Live Price
+        The real current Brent crude market price,
+        fetched live from FRED (DCOILBRENTEU series).
+        This is display only — it does NOT feed into
+        the model's forecast calculations.
+
+$82.63  Baseline Week-12 Price
+        What SARIMAX forecasts at week 12 if absolutely
+        nothing changes — no scenario applied.
+        The model starts from its last training observation
+        ($61.35, the final row of the dataset) and projects
+        forward using current macro conditions.
+
+$87.23  Expected Price Week-12
+        What SARIMAX forecasts at week 12 WITH your scenario
+        applied — the probability-weighted average across all
+        relevant scenarios.
+
++$4.60  The difference between expected ($87.23) and
+        baseline ($82.63). Your scenario adds $4.60 to
+        what would have happened naturally.
+
+$81–$90 The spread across all scenarios considered.
+        $81 = lowest-priced scenario outcome (worst case)
+        $90 = highest-priced scenario outcome (best case)
+        $87.23 sits inside this range — the weighted midpoint.
+```
+
+### How all four numbers connect
+
+```
+Real market today          Model baseline            Model expected
+     $94.00        →           $82.63        →           $87.23
+  (FRED live,              (no shock applied,        (scenario applied,
+  display only)             from dataset)            +$4.60 uplift)
+
+                                    ↑
+                     Range: $81 ────┼──── $90
+                                 $87.23
+                           (expected sits here)
+```
+
+### Why the live price ($94) and baseline ($82.63) are different
+
+This is the most common question and the most important one to understand.
+
+The SARIMAX model was trained on a dataset whose last observation is **$61.35** (early 2026). The live FRED price of $94 is fetched separately for display purposes only — it does not update the model's starting point. So the model forecasts forward from $61.35, arriving at a baseline of $82.63 at week 12. The real market is at $94 because prices moved after the dataset cutoff.
+
+```
+Dataset ends:     $61.35  ← model's last known price
+Model baseline:   $82.63  ← model's week-12 forecast from $61.35
+FRED live price:  $94.00  ← real market today (display only)
+
+The $94 and $82.63 are on different reference points.
+They are not directly comparable.
+```
+
+The system's value is in **relative scenario comparison** — how much a specific shock moves prices relative to the no-shock baseline — not in absolute price level accuracy. In a production deployment, the model would be retrained periodically so its starting observation stays close to the current market price.
+
+### What the forecast range tells you
+
+```
+Range $81–$90 with expected $87.23 means:
+
+  If the bearish scenarios dominate → price lands near $81
+  If the bullish scenarios dominate → price lands near $90
+  Probability-weighted best estimate → $87.23
+
+  A narrow range (e.g. $85–$88) = high scenario agreement,
+  low uncertainty
+
+  A wide range (e.g. $75–$100) = scenarios strongly disagree,
+  high uncertainty — the query likely involves multiple
+  competing forces
+```
+
+---
+
 ## ⚙️ Deployment Architecture
 
 ### Backend — Render (FastAPI)
@@ -521,4 +614,4 @@ MIT License — free to use, modify, and distribute.
 
 ---
 
-*Built as a technical assessment demonstrating end-to-end ML system design: data ingestion, econometric modeling, probabilistic simulation engine, LLM integration, macro signal adjustment, REST API, and cloud deployment.*
+*End-to-end ML system covering data ingestion, econometric modeling, probabilistic simulation, LLM integration, macro signal adjustment, REST API, and cloud deployment.*
