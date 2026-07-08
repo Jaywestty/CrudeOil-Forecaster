@@ -14,7 +14,7 @@
 | 🖥️ Frontend (Streamlit) | [crude-forecaster.streamlit.app](https://crude-forecaster.streamlit.app/) | Interactive probabilistic simulation UI |
 | ⚙️ Backend (FastAPI) | [crudeoil-forecaster.onrender.com](https://crudeoil-forecaster.onrender.com/) | REST API + auto-generated docs at `/docs` |
 
-> ⚠️ **Cold start notice:** The API runs on Render's free tier and spins down after 15 minutes of inactivity. The first request after a period of sleep takes **30–60 seconds** to wake up — this is expected. A keepalive worker pings the API every 280 seconds to minimise this during active use.
+> ⚠️ **Cold start notice:** The API runs on Render's free tier and spins down after 15 minutes of inactivity. The first request after a period of sleep takes **30–60 seconds** to wake up — this is expected.
 
 ---
 
