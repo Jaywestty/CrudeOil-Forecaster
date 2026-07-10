@@ -370,8 +370,9 @@ uvicorn api:app --reload
 # API: http://localhost:8000
 # Docs: http://localhost:8000/docs
 
-# 7. In a new terminal, start the Streamlit frontend
-streamlit run streamlit_app.py
+# 7. In a new terminal, install the Streamlit UI's dependencies and start it
+pip install -r streamlit_ui/requirements.txt --break-system-packages
+streamlit run streamlit_ui/app_ui.py
 # UI: http://localhost:8501
 ```
 
@@ -534,7 +535,7 @@ Free Tier behaviour:
 
 ```
 Platform:    Streamlit Community Cloud (Free)
-Entry point: streamlit_app.py
+Entry point: app_ui.py
 Secrets:     API_URL set via Streamlit Cloud dashboard
 Auto-deploy: Yes — triggers on every push to main branch
 ```
