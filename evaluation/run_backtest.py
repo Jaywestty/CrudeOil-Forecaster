@@ -19,7 +19,7 @@ import pandas as pd
 from evaluation import metrics, report
 from evaluation.backtest import BacktestConfig, run_backtest
 from evaluation.data import data_fingerprint, load_dataset, train_size
-from evaluation.forecasters import SarimaxForecaster, SeasonalNaive, default_forecasters
+from evaluation.forecasters import SeasonalNaive, _DirectMultiHorizon, default_forecasters
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADLINE_HORIZONS = [1, 4, 12]
@@ -43,7 +43,8 @@ def _progress(done: int, total: int) -> None:
 
 def legacy_evaluation(y, X, n_train, forecasters) -> pd.DataFrame:
     """Reproduce the notebook's single-origin evaluation over the whole test set."""
-    usable = [f for f in forecasters if not isinstance(f, SeasonalNaive)]  # needs horizon <= 52
+    # Seasonal naive needs horizon <= 52; direct ML models are trained for 12 weeks only.
+    usable = [f for f in forecasters if not isinstance(f, (SeasonalNaive, _DirectMultiHorizon))]
     cfg = BacktestConfig(first_origin=n_train - 1, horizon=len(y) - n_train, step=len(y), refit_every=None)
     fc = run_backtest(y, X, usable, cfg)
     rows = []
@@ -89,8 +90,18 @@ def main(argv: list[str] | None = None) -> int:
     summary = metrics.summarize(forecasts, scale=scale)
     by_year = metrics.mae_by_year(forecasts, horizon=args.horizon).round(2)
 
-    estimators = {id(f.estimator): f.estimator for f in forecasters if isinstance(f, SarimaxForecaster)}
-    fit_log = pd.DataFrame([row for est in estimators.values() for row in est.fit_log])
+    # Collect each distinct fit log once (SARIMAX variants share an estimator's log).
+    logs: dict[int, list] = {}
+    for f in forecasters:
+        log = getattr(f, "fit_log", None)
+        if log is None and hasattr(f, "estimator"):
+            log = f.estimator.fit_log
+        if log is not None:
+            logs[id(log)] = log
+    fit_log = pd.DataFrame([row for log in logs.values() for row in log])
+
+    candidates = [f.name for f in forecasters if not f.is_baseline and not f.uses_future_exog]
+    promotion = metrics.promotion_decisions(summary, candidates, HEADLINE_HORIZONS)
 
     meta = {
         "n_obs": len(y),
@@ -118,9 +129,16 @@ def main(argv: list[str] | None = None) -> int:
     by_year.to_csv(out / "mae_by_year.csv")
     legacy.to_csv(out / "legacy_evaluation.csv", index=False)
     fit_log.to_csv(out / "fit_log.csv", index=False)
+    promotion.to_csv(out / "promotion.csv", index=False)
     (out / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     md = report.render(
-        meta=meta, summary=summary, by_year=by_year, legacy=legacy, fit_log=fit_log, horizons=HEADLINE_HORIZONS
+        meta=meta,
+        summary=summary,
+        by_year=by_year,
+        legacy=legacy,
+        fit_log=fit_log,
+        promotion=promotion,
+        horizons=HEADLINE_HORIZONS,
     )
     (out / "report.md").write_text(md, encoding="utf-8")
 

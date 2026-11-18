@@ -3,7 +3,7 @@
   "data_start": "2006-01-15",
   "data_end": "2026-01-04",
   "data_fingerprint": "{\"oil_macro_weekly.csv\": \"5f9d9bc1489940e9\", \"oil_macro_transformed.csv\": \"80e3a074c94ebd3b\"}",
-  "git_commit": "8eed9b8-dirty",
+  "git_commit": "f4794f7-dirty",
   "n_origins": 198,
   "step": 1,
   "first_origin": "2022-01-02",
@@ -13,6 +13,6 @@
   "mase_scale": 2.438031212484994,
   "legacy_horizon": 209,
   "by_year_horizon": 12,
-  "runtime_seconds": 391.8,
+  "runtime_seconds": 488.9,
   "python": "3.12.10"
 }

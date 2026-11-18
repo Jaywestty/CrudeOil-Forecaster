@@ -204,3 +204,83 @@ def test_dataset_is_regular_weekly_and_matches_train_split():
     assert list(X.columns) == EXOG_COLS
     assert y.index.freqstr.startswith("W")
     assert train_size(len(y)) == int(len(y) * 0.8)
+
+
+# ── Step 1b: features, direct ML challengers, multiple testing ──────────────
+
+from evaluation.features import WARMUP, build_features, direct_target, training_rows  # noqa: E402
+from evaluation.forecasters import DirectQuantileGBM, DirectRidge  # noqa: E402
+
+
+def test_features_do_not_change_when_future_data_is_appended():
+    y, X = _series(n=150)
+    short = build_features(y.to_numpy()[:100], X.to_numpy()[:100])
+    full = build_features(y.to_numpy(), X.to_numpy())
+    np.testing.assert_array_equal(short, full[:100])  # NaN-aware equality
+    assert np.isnan(full[:WARMUP]).all() and not np.isnan(full[WARMUP:]).any()
+
+
+def test_direct_target_and_training_rows_never_use_unobserved_prices():
+    y = np.exp(np.arange(10, dtype=float))  # log y = 0, 1, 2, ...
+    np.testing.assert_allclose(direct_target(y, 3)[:7], 3.0)
+    assert np.isnan(direct_target(y, 3)[7:]).all()
+    n, h = 120, 12
+    rows = range(n)[training_rows(n, h)]
+    assert rows[0] == WARMUP and rows[-1] + h == n - 1  # last label uses the origin's own price
+
+
+def _signal_series(n=600, seed=3):
+    """Prices whose next-week return is driven by today's exog0, a known, learnable signal."""
+    rng = np.random.default_rng(seed)
+    X = rng.normal(0, 1, (n, 2))
+    r = np.r_[0.0, 0.02 * X[:-1, 0] + rng.normal(0, 0.005, n - 1)]
+    idx = pd.date_range("2000-01-02", periods=n, freq="W-SUN")
+    return pd.Series(60 * np.exp(np.cumsum(r)), index=idx), pd.DataFrame(X, index=idx, columns=["a", "b"])
+
+
+@pytest.mark.parametrize("model_cls", [DirectRidge, DirectQuantileGBM])
+def test_direct_models_learn_a_real_signal(model_cls):
+    """Positive control: a null result on oil must not be a pipeline bug."""
+    y, X = _signal_series()
+    cfg = BacktestConfig(first_origin=499, horizon=1, step=1, refit_every=None)
+    out = run_backtest(y, X, [Naive(), model_cls(max_horizon=1)], cfg)
+    s = metrics.summarize(out, scale=1.0)
+    rel = s.loc[s["model"] == model_cls.name, "rel_MAE"].item()
+    assert rel < 0.6
+
+
+def test_direct_forecasts_are_valid_and_gbm_intervals_are_ordered():
+    y, X = _signal_series(n=200)
+    yv, Xv = y.to_numpy(), X.to_numpy()
+    ridge, gbm = DirectRidge(max_horizon=4), DirectQuantileGBM(max_horizon=4)
+    for m in (ridge, gbm):
+        m.fit(yv[:180], Xv[:180])
+    ctx = ForecastContext(yv[:190], Xv[:190], 4)
+    fr, fg = ridge.forecast(ctx), gbm.forecast(ctx)
+    assert fr.mean.shape == (4,) and fr.lower is None
+    assert np.all(fg.lower <= fg.mean) and np.all(fg.mean <= fg.upper)
+    with pytest.raises(ValueError):
+        ridge.forecast(ForecastContext(yv[:190], Xv[:190], 5))  # beyond trained horizons
+    assert ridge.fit_log[0]["details"].startswith("alpha")
+
+
+def test_holm_adjustment_known_values():
+    np.testing.assert_allclose(metrics.holm([0.01, 0.04, 0.03]), [0.03, 0.06, 0.06])
+    adj = metrics.holm([0.2, np.nan])
+    assert adj[0] == pytest.approx(0.2) and np.isnan(adj[1])
+
+
+def test_promotion_requires_lower_error_and_significance_after_holm():
+    summary = pd.DataFrame(
+        {
+            "horizon": [1, 1, 1],
+            "model": ["A", "B", "C"],
+            "MAE": [1.0, 1.0, 1.0],
+            "rel_MAE": [0.9, 0.95, 1.1],
+            "DM_p": [0.001, 0.03, 0.03],
+        }
+    )
+    d = metrics.promotion_decisions(summary, ["A", "B", "C"], [1]).set_index("model")["verdict"]
+    assert d["A"] == "PROMOTE"
+    assert d["B"] == "better, not significant"  # 0.03 alone would pass; Holm makes it 0.06
+    assert d["C"] == "worse than naive"
