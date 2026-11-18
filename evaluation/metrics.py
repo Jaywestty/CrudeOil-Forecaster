@@ -119,9 +119,57 @@ def summarize(
     return pd.DataFrame(rows)
 
 
+def holm(pvalues) -> np.ndarray:
+    """Holm–Bonferroni adjusted p-values (controls the family-wise error rate).
+
+    Testing many model × horizon pairs makes a few "significant" wins likely by
+    luck alone. Holm sorts the p-values and multiplies the k-th smallest by
+    (m - k + 1), enforcing monotonicity, so the chance of any false promotion
+    stays at or below alpha.
+    """
+    p = np.asarray(pvalues, dtype=float)
+    out = np.full_like(p, np.nan)
+    ok = ~np.isnan(p)
+    m = int(ok.sum())
+    if m == 0:
+        return out
+    idx = np.where(ok)[0][np.argsort(p[ok])]
+    running = 0.0
+    for rank, i in enumerate(idx):
+        running = max(running, min(1.0, (m - rank) * p[i]))
+        out[i] = running
+    return out
+
+
+def promotion_decisions(
+    summary: pd.DataFrame, candidates: list[str], horizons: list[int], alpha: float = 0.05
+) -> pd.DataFrame:
+    """Apply the pre-registered promotion rule.
+
+    A candidate is promoted at a horizon only if it has lower MAE than the
+    benchmark AND its Holm-adjusted Diebold–Mariano p-value is below alpha.
+    The Holm family is every candidate × horizon test in this table.
+    """
+    s = summary[summary["model"].isin(candidates) & summary["horizon"].isin(horizons)].copy()
+    s["DM_p_holm"] = holm(s["DM_p"].to_numpy())
+
+    def verdict(r) -> str:
+        if r["rel_MAE"] >= 1:
+            return "worse than naive"
+        if r["DM_p_holm"] < alpha:
+            return "PROMOTE"
+        return "better, not significant"
+
+    s["verdict"] = s.apply(verdict, axis=1)
+    return s[["horizon", "model", "MAE", "rel_MAE", "DM_p", "DM_p_holm", "verdict"]].reset_index(drop=True)
+
+
 def mae_by_year(forecasts: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """MAE per model per target-date year, to show how error depends on regime."""
     g = forecasts[forecasts["horizon"] == horizon].copy()
     g["abs_err"] = (g["y_true"] - g["y_pred"]).abs()
     g["year"] = pd.to_datetime(g["target_date"]).dt.year
-    return g.pivot_table(index="year", columns="model", values="abs_err", aggfunc="mean", sort=False)
+    table = g.pivot_table(index="year", columns="model", values="abs_err", aggfunc="mean", sort=False)
+    # Forecasts per year; years with only a handful of targets should not be over-read.
+    table.insert(0, "n", g[g["model"] == g["model"].iloc[0]].groupby("year").size())
+    return table
