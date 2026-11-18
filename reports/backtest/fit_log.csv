@@ -1,9 +1,17 @@
-use_exog,n_obs,converged,iterations,seconds,aic
-False,834,True,24,35.8,4037.04
-False,886,True,20,12.2,4467.25
-False,938,True,15,8.2,4762.68
-False,990,True,13,8.5,5029.07
-True,834,True,71,68.5,3969.42
-True,886,True,33,25.5,4407.51
-True,938,True,74,54.0,4706.35
-True,990,True,27,23.9,4970.29
+model,n_obs,converged,iterations,seconds,aic,details
+SARIMA (no exog),834,True,24.0,10.5,4037.04,
+SARIMA (no exog),886,True,20.0,11.2,4467.25,
+SARIMA (no exog),938,True,15.0,8.3,4762.68,
+SARIMA (no exog),990,True,13.0,7.8,5029.07,
+SARIMAX (shared by exog variants),834,True,71.0,49.4,3969.42,
+SARIMAX (shared by exog variants),886,True,33.0,25.2,4407.51,
+SARIMAX (shared by exog variants),938,True,74.0,53.8,4706.35,
+SARIMAX (shared by exog variants),990,True,27.0,24.5,4970.29,
+Ridge direct (lagged features),834,,,2.2,,"alpha h1=1e+03, h4=1.78e+03, h12=1e+04"
+Ridge direct (lagged features),886,,,2.7,,"alpha h1=1.78e+03, h4=3.16e+03, h12=1e+04"
+Ridge direct (lagged features),938,,,2.4,,"alpha h1=1.78e+03, h4=3.16e+03, h12=1e+04"
+Ridge direct (lagged features),990,,,2.9,,"alpha h1=1.78e+03, h4=3.16e+03, h12=1e+04"
+Quantile GBM direct (lagged features),834,,,27.8,,
+Quantile GBM direct (lagged features),886,,,28.3,,
+Quantile GBM direct (lagged features),938,,,29.8,,
+Quantile GBM direct (lagged features),990,,,28.5,,
