@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import RidgeCV
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+from evaluation.features import WARMUP, build_features, direct_target, training_rows
 
 Z_95 = 1.959963984540054
 
@@ -41,6 +47,7 @@ class Forecast:
 class Forecaster(ABC):
     name: str
     uses_future_exog: bool = False
+    is_baseline: bool = False  # baselines are benchmarks, not promotion candidates
 
     def fit(self, y: np.ndarray, X: np.ndarray) -> None:
         """Estimate parameters on data up to the origin. Baselines need none."""
@@ -53,6 +60,7 @@ class Forecaster(ABC):
 
 
 class Naive(Forecaster):
+    is_baseline = True
     """Random walk: every future week equals the last observed price.
 
     Intervals assume i.i.d. weekly changes, so their width grows with sqrt(h).
@@ -71,6 +79,8 @@ class Naive(Forecaster):
 class SeasonalNaive(Forecaster):
     """Each future week equals the same week one season (52 weeks) earlier."""
 
+    is_baseline = True
+
     def __init__(self, period: int = 52):
         self.period = period
         self.name = f"SeasonalNaive({period})"
@@ -87,6 +97,7 @@ class Drift(Forecaster):
     """Random walk with drift: extend the line from the first to the last point."""
 
     name = "Drift"
+    is_baseline = True
 
     def forecast(self, ctx: ForecastContext) -> Forecast:
         y = ctx.y_hist
@@ -141,7 +152,7 @@ class SarimaxEstimator:
             result = model.fit(disp=False, maxiter=self.maxiter, start_params=start)
         self.fit_log.append(
             {
-                "use_exog": self.use_exog,
+                "model": "SARIMAX (shared by exog variants)" if self.use_exog else "SARIMA (no exog)",
                 "n_obs": len(y),
                 "converged": bool(result.mle_retvals.get("converged", False)),
                 "iterations": int(result.mle_retvals.get("iterations", -1)),
@@ -206,6 +217,132 @@ class SarimaxForecaster(Forecaster):
         return Forecast(np.asarray(fc.predicted_mean), ci[:, 0], ci[:, 1])
 
 
+# ── Direct multi-horizon ML challengers ─────────────────────────────────────
+
+
+class _DirectMultiHorizon(Forecaster):
+    """One model per horizon h, each predicting the h-week log return.
+
+    Using only features known at the origin means future exogenous values are
+    never needed, so these models are deployable as-is. Predicting returns,
+    not price levels, lets a macro signal translate into a move that scales
+    with the horizon.
+    """
+
+    def __init__(self, max_horizon: int = 12):
+        self.max_horizon = max_horizon
+        self.models: dict[int, object] = {}
+        self.fit_log: list[dict] = []
+
+    def _fit_one(self, F: np.ndarray, target: np.ndarray, h: int): ...
+
+    def _predict_one(self, model, f: np.ndarray) -> tuple[float, float | None, float | None]: ...
+
+    def _describe(self) -> str:
+        return ""
+
+    def fit(self, y: np.ndarray, X: np.ndarray) -> None:
+        t0 = time.perf_counter()
+        F = build_features(y, X)
+        for h in range(1, self.max_horizon + 1):
+            rows = training_rows(len(y), h)
+            Ftr, ttr = F[rows], direct_target(y, h)[rows]
+            if np.isnan(Ftr).any() or np.isnan(ttr).any():
+                raise ValueError("Training rows contain undefined features or unobserved labels")
+            self.models[h] = self._fit_one(Ftr, ttr, h)
+        self.fit_log.append(
+            {
+                "model": self.name,
+                "n_obs": len(y),
+                "seconds": round(time.perf_counter() - t0, 1),
+                "details": self._describe(),
+            }
+        )
+
+    def forecast(self, ctx: ForecastContext) -> Forecast:
+        if ctx.horizon > self.max_horizon:
+            raise ValueError(f"{self.name} was trained for horizons up to {self.max_horizon}")
+        if not self.models:
+            raise RuntimeError("fit() must be called before forecasting")
+        tail = WARMUP + 1  # enough history to define the origin's features
+        f = build_features(ctx.y_hist[-tail:], ctx.X_hist[-tail:])[-1]
+        last = ctx.y_hist[-1]
+        mean, lower, upper = [], [], []
+        for h in range(1, ctx.horizon + 1):
+            mid, lo, hi = self._predict_one(self.models[h], f)
+            mean.append(last * np.exp(mid))
+            lower.append(np.nan if lo is None else last * np.exp(lo))
+            upper.append(np.nan if hi is None else last * np.exp(hi))
+        has_interval = not np.isnan(lower).all()
+        return Forecast(
+            np.array(mean),
+            np.array(lower) if has_interval else None,
+            np.array(upper) if has_interval else None,
+        )
+
+
+class DirectRidge(_DirectMultiHorizon):
+    """Standardised ridge regression; penalty chosen by time-series CV on training data.
+
+    The CV folds use ``gap=h`` so a training label never overlaps the
+    validation window (labels are h-week returns, so neighbouring rows share
+    future prices).
+    """
+
+    name = "Ridge direct (lagged features)"
+    ALPHAS = np.logspace(-2, 4, 25)
+
+    def _fit_one(self, F, target, h):
+        scaler = StandardScaler().fit(F)
+        model = RidgeCV(
+            alphas=self.ALPHAS,
+            cv=TimeSeriesSplit(n_splits=5, gap=h),
+            scoring="neg_mean_absolute_error",
+        ).fit(scaler.transform(F), target)
+        return scaler, model
+
+    def _predict_one(self, model, f):
+        scaler, ridge = model
+        return float(ridge.predict(scaler.transform(f[None, :]))[0]), None, None
+
+    def _describe(self) -> str:
+        alphas = {h: self.models[h][1].alpha_ for h in (1, 4, 12) if h in self.models}
+        return "alpha " + ", ".join(f"h{h}={a:.3g}" for h, a in alphas.items())
+
+
+class DirectQuantileGBM(_DirectMultiHorizon):
+    """Gradient-boosted trees fitted to the 2.5%, 50% and 97.5% quantiles.
+
+    The median minimises absolute error, matching the headline metric, and
+    the outer quantiles give a 95% interval without assuming normal errors.
+    Hyperparameters are fixed in advance and deliberately conservative
+    (shallow trees, large leaves) for roughly 800 noisy samples.
+    """
+
+    name = "Quantile GBM direct (lagged features)"
+    QUANTILES = (0.025, 0.5, 0.975)
+
+    def _fit_one(self, F, target, h):
+        return [
+            HistGradientBoostingRegressor(
+                loss="quantile",
+                quantile=q,
+                max_iter=200,
+                learning_rate=0.05,
+                max_leaf_nodes=8,
+                min_samples_leaf=40,
+                l2_regularization=1.0,
+                early_stopping=False,
+                random_state=0,
+            ).fit(F, target)
+            for q in self.QUANTILES
+        ]
+
+    def _predict_one(self, model, f):
+        lo, mid, hi = sorted(float(m.predict(f[None, :])[0]) for m in model)  # sorting prevents quantile crossing
+        return mid, lo, hi
+
+
 def default_forecasters() -> list[Forecaster]:
     """The model set compared in the step-1 backtest."""
     with_exog = SarimaxEstimator(use_exog=True)
@@ -218,4 +355,6 @@ def default_forecasters() -> list[Forecaster]:
         SarimaxForecaster("SARIMAX exog=persist", with_exog, "persist"),
         SarimaxForecaster("SARIMAX exog=mean", with_exog, "mean"),
         SarimaxForecaster("SARIMAX exog=oracle", with_exog, "oracle"),
+        DirectRidge(),
+        DirectQuantileGBM(),
     ]
