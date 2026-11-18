@@ -55,8 +55,22 @@ def render(
     by_year: pd.DataFrame,
     legacy: pd.DataFrame,
     fit_log: pd.DataFrame,
+    promotion: pd.DataFrame,
     horizons: list[int],
 ) -> str:
+    promo = promotion.copy()
+    promo["DM_p"] = promo["DM_p"].map(_p_label)
+    promo["DM_p_holm"] = promo["DM_p_holm"].map(_p_label)
+    promo = promo.rename(
+        columns={"MAE": "MAE ($)", "rel_MAE": "MAE / Naive", "DM_p": "DM p", "DM_p_holm": "DM p (Holm)"}
+    )
+    promoted = promotion[promotion["verdict"] == "PROMOTE"]
+    promo_summary = (
+        "**No candidate meets the rule; the naive forecast remains the benchmark to beat.**"
+        if promoted.empty
+        else "**Promoted:** "
+        + "; ".join(f"{r.model} at {r.horizon} weeks" for r in promoted.itertuples())
+    )
     parts = [
         "# Walk-forward backtest — Brent weekly forecasts",
         "",
@@ -102,13 +116,25 @@ def render(
     for h in horizons:
         parts += [f"### {h}-week ahead", "", headline_table(summary, h), ""]
     parts += [
-        f"## 3. {meta['by_year_horizon']}-week-ahead MAE ($) by target year",
+        "## 3. Promotion decision",
         "",
-        "Accuracy depends heavily on the market regime, so a single average hides a lot.",
+        "Rule, fixed before the challengers were run: a deployable, non-baseline model is promoted "
+        "at a horizon only if its MAE is below Naive's **and** its Diebold–Mariano p-value, "
+        "Holm-adjusted across every candidate × horizon below, is under 0.05. Hyperparameters are "
+        "fixed in advance or chosen by cross-validation on training data only.",
+        "",
+        md_table(promo, {"MAE / Naive": 3}),
+        "",
+        promo_summary,
+        "",
+        f"## 4. {meta['by_year_horizon']}-week-ahead MAE ($) by target year",
+        "",
+        "Accuracy depends heavily on the market regime, so a single average hides a lot. "
+        "`n` is the number of forecasts per year; treat years with small `n` as anecdotes.",
         "",
         md_table(by_year, index=True),
         "",
-        "## 4. Parameter estimation log",
+        "## 5. Parameter estimation log",
         "",
         md_table(fit_log, {"seconds": 1, "aic": 1}),
         "",
