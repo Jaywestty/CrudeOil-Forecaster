@@ -13,3 +13,8 @@ tests/__pycache__/conftest.cpython-310-pytest-9.0.2.pyc
 tests/__pycache__/test_app.cpython-310-pytest-9.0.2.pyc
 tests/__pycache__/test_llm_explainer.cpython-310-pytest-9.0.2.pyc
 tests/__pycache__/test_scenario_engine.cpython-310-pytest-9.0.2.pyc
+
+.venv/
+__pycache__/
+.pytest_cache/
+docs/learning/01-honest-evaluation.md

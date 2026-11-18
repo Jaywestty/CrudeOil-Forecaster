@@ -1,0 +1,9 @@
+use_exog,n_obs,converged,iterations,seconds,aic
+False,834,True,24,35.8,4037.04
+False,886,True,20,12.2,4467.25
+False,938,True,15,8.2,4762.68
+False,990,True,13,8.5,5029.07
+True,834,True,71,68.5,3969.42
+True,886,True,33,25.5,4407.51
+True,938,True,74,54.0,4706.35
+True,990,True,27,23.9,4970.29
