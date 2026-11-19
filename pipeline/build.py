@@ -48,13 +48,19 @@ class Recipe:
 # Exactly what the Colab notebook did, including its partial final week
 # (cutoff 2025-12-31, a Wednesday). Used to verify reproducibility.
 RECIPE_V1 = Recipe(name="v1-notebook", complete_weeks_only=False)
-# Production default: the notebook recipe, but only fully ended weeks.
+# The notebook recipe, but only fully ended weeks.
 RECIPE_V1_1 = Recipe(name="v1.1-complete-weeks")
 # Also moves monthly values to roughly when they were published:
 # industrial production ~mid next month (+45 days), fed funds monthly average
 # at the start of next month (+32 days).
 RECIPE_V2 = Recipe(name="v2-release-aware", release_lag_days={"industrial_prod": 45, "fed_funds": 32})
 RECIPES = {r.name: r for r in (RECIPE_V1, RECIPE_V1_1, RECIPE_V2)}
+
+# Step 3b decision, fixed before comparing results: production uses the
+# release-aware recipe because it only uses information that was public at
+# each date. The v1.1 vs v2 backtest measures how much the old timing leak
+# inflated results; accuracy does not decide whether to keep a leak.
+PRODUCTION_RECIPE = RECIPE_V2
 
 
 def build_weekly(raw: dict[str, pd.Series], end: str, recipe: Recipe = RECIPE_V1) -> pd.DataFrame:
