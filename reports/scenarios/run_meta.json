@@ -1,0 +1,7 @@
+{
+  "n_events": 31,
+  "n_confounded": 4,
+  "data_fingerprint": "{\"oil_macro_weekly.csv\": \"5f9d9bc1489940e9\", \"oil_macro_transformed.csv\": \"80e3a074c94ebd3b\"}",
+  "git_commit": "8b78ed2-dirty",
+  "runtime_seconds": 27.9
+}
