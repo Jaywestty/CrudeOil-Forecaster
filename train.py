@@ -26,10 +26,14 @@ print(f"   Converged: {summary['converged']} ({summary['iterations']} iterations
 if not summary["converged"]:
     print("   WARNING: optimiser did not converge; check the data before deploying.")
 
+# Save a serving copy: same parameters and forecasts, but only the final filter
+# state (~3 MB instead of ~490 MB), so the API fits in Render's 512 MB.
+serving = modeling.serving_model(fitted, weekly, transformed)
 Path("models").mkdir(exist_ok=True)
 with open("models/sarimax_model.pkl", "wb") as f:
-    pickle.dump(fitted, f)
+    pickle.dump(serving, f)
 
-print(" Model saved to models/sarimax_model.pkl")
+size_mb = Path("models/sarimax_model.pkl").stat().st_size / 1e6
+print(f" Model saved to models/sarimax_model.pkl ({size_mb:.1f} MB)")
 print(f"   AIC: {summary['aic']:.2f}")
 print(f"   Forecasts will start the week after {y.index[-1].date()}")
