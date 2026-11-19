@@ -1,3 +1,4 @@
+import pytest
 import json
 from unittest.mock import MagicMock
 
@@ -119,3 +120,38 @@ class TestSimulateProbabilisticEndpoint:
         assert body["price_low"] <= body["price_expected"] <= body["price_high"]
         assert "opec_cut" in body["scenario_breakdown"]
         assert "geopolitical_tension" in body["scenario_breakdown"]
+    def test_response_includes_v21_fields(self, api_client):
+        client, _, fake_groq_client = api_client
+        payload = json.dumps({
+            "probabilities": {"opec_cut": 0.97, "rate_hike": 0.03},
+            "primary_driver": "opec_cut",
+            "confidence": "high",
+            "reasoning": "test",
+            "scenario_context": "test query",
+            "specific_entity": None
+        })
+        msg = MagicMock()
+        msg.content = payload
+        choice = MagicMock()
+        choice.message = msg
+        completion = MagicMock()
+        completion.choices = [choice]
+        fake_groq_client.chat.completions.create.return_value = completion
+
+        body = client.post("/simulate-probabilistic", json={"query": "q", "forecast_weeks": 8}).json()
+
+        assert len(body["scenario_breakdown"]["opec_cut"]["forecast"]) == 8
+        assert len(body["statistical_band"]["level_95"]["lower"]) == 8
+        assert "backtest" in body["statistical_band"]["note"]
+        assert sum(body["final_probabilities"].values()) == pytest.approx(1.0, abs=0.001)
+        assert "rate_hike" in body["dropped_scenarios"]
+        assert body["model_info"]["llm"].startswith("openai/gpt-oss-120b")
+
+
+class TestRootModelInfo:
+
+    def test_root_reports_models(self, api_client):
+        client, _, _ = api_client
+        info = client.get("/").json()["model_info"]
+        assert "SARIMAX" in info["forecaster"]
+        assert "gpt-oss-120b" in info["llm"]

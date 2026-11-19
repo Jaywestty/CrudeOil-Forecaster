@@ -1,9 +1,25 @@
 import os
 import json
-from groq import Groq
+from groq import Groq, GroqError
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── LLM configuration ──────────────────────────────────────────────
+# gpt-oss-120b is a reasoning model: it "thinks" before answering, and those
+# reasoning tokens are generated before the visible answer. Each call therefore
+# gets REASONING_HEADROOM extra tokens on top of the answer budget, so a long
+# chain of thought can never leave the answer empty. Low effort is enough for
+# these short parsing/explanation tasks and keeps latency down.
+# GROQ_MODEL lets you switch models without a code change.
+LLM_MODEL          = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+REASONING_EFFORT   = "low"
+REASONING_HEADROOM = 1024
+
+EXPLANATION_FALLBACK = (
+    "The written explanation is temporarily unavailable (the language model could "
+    "not be reached). The forecast numbers and charts above are unaffected."
+)
 
 AVAILABLE_SCENARIOS = {
     "opec_cut":             "OPEC or major producer cutting oil supply",
@@ -63,8 +79,31 @@ class LLMExplainer:
                 "GROQ_API_KEY not found. Get a free key at console.groq.com"
             )
         self.client = Groq(api_key=api_key)
-        self.model  = "llama-3.3-70b-versatile"
-        print("✅ LLM Explainer ready")
+        self.model  = LLM_MODEL
+        print(f"✅ LLM Explainer ready ({self.model})")
+
+
+    def _complete(self, messages, temperature, max_tokens):
+        """
+        One chat completion, returning the visible answer text.
+
+        All Groq calls go through here so model settings live in one place.
+        ``include_reasoning=False`` keeps the model's reasoning out of the
+        response. An empty answer raises, which sends every caller to its
+        existing fallback instead of showing a blank explanation.
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_completion_tokens=max_tokens + REASONING_HEADROOM,
+            reasoning_effort=REASONING_EFFORT,
+            include_reasoning=False,
+        )
+        content = response.choices[0].message.content
+        if not content or not content.strip():
+            raise ValueError(f"{self.model} returned an empty answer")
+        return content.strip()
 
 
     # ─────────────────────────────────────────────────────────────────────
@@ -124,17 +163,14 @@ class LLMExplainer:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            raw = self._complete(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": f"Query: {user_query}"}
                 ],
                 temperature=0.1,
-                max_tokens=400
+                max_tokens=400,
             )
-
-            raw = response.choices[0].message.content.strip()
 
             # Clean markdown fences if present
             if "```" in raw:
@@ -163,10 +199,11 @@ class LLMExplainer:
 
             return parsed
 
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, GroqError):
             # JSONDecodeError -> LLM returned malformed JSON
             # KeyError        -> expected key missing from parsed dict
             # ValueError      -> raised because LLM returned a list not dict
+            # GroqError       -> API failure (bad key, rate limit, outage)
             # TypeError       -> .get() called on non-dict (safety net)
             print("  Parse failed -- using fallback")
             return {
@@ -255,17 +292,14 @@ class LLMExplainer:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            raw = self._complete(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": f"Query: {user_query}"}
                 ],
                 temperature=0.1,
-                max_tokens=400
+                max_tokens=400,
             )
-
-            raw = response.choices[0].message.content.strip()
 
             # Clean markdown fences if present
             if "```" in raw:
@@ -298,7 +332,7 @@ class LLMExplainer:
 
             return parsed
 
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, GroqError):
             print("  Probabilistic parse failed -- using fallback")
             return {
                 "probabilities":    {"geopolitical_tension": 1.0},
@@ -344,9 +378,9 @@ class LLMExplainer:
 
             Current Brent price: ${result['current_price']:.2f}/barrel
             Immediate impact (Week 1):  {w1['formatted']}
-            Full impact (Week 12):      {w12['formatted']}
-            Baseline Week 12:  ${w12['baseline']:.2f}/barrel
-            Scenario Week 12:  ${w12['shocked']:.2f}/barrel
+            Full impact (Week {result['weeks']}):      {w12['formatted']}
+            Baseline Week {result['weeks']}:  ${w12['baseline']:.2f}/barrel
+            Scenario Week {result['weeks']}:  ${w12['shocked']:.2f}/barrel
 
             Shocks applied to macro model:
             {json.dumps(result['shocks'], indent=2)}
@@ -384,19 +418,20 @@ class LLMExplainer:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            raw = self._complete(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": numbers}
                 ],
                 temperature=0.5,
-                max_tokens=450
+                max_tokens=450,
             )
-            return response.choices[0].message.content.strip()
+            return raw
 
         except Exception as e:
-            return f"Explanation unavailable: {str(e)}"
+            # Log the real error for operators; never show raw API errors to users.
+            print(f"  Explanation generation failed: {e}")
+            return EXPLANATION_FALLBACK
 
 
     # ─────────────────────────────────────────────────────────────────────
@@ -428,7 +463,7 @@ class LLMExplainer:
         # Build a readable text summary of the breakdown
         breakdown_text = "\n".join([
             f"  {scenario_names.get(k, k)}: {v*100:.0f}% weight "
-            f"→ Week-12 price ${result['scenario_week12'].get(k, 0):.2f}"
+            f"→ Week-{result['forecast_weeks']} price ${result['scenario_week12'].get(k, 0):.2f}"
             for k, v in result["scenario_probabilities"].items()
         ])
 
@@ -439,7 +474,7 @@ class LLMExplainer:
             Baseline (no shock): ${result['baseline_week12']:.2f}/barrel
 
             Probabilistic forecast result:
-              Expected price (Week 12): ${result['price_expected']:.2f}/barrel
+              Expected price (Week {result['forecast_weeks']}): ${result['price_expected']:.2f}/barrel
               Price range:              ${result['price_low']:.2f} – ${result['price_high']:.2f}/barrel
               Primary driver: {scenario_names.get(primary, primary)} ({primary_prob*100:.0f}% weight)
 
@@ -488,19 +523,20 @@ class LLMExplainer:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            raw = self._complete(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": numbers}
                 ],
                 temperature=0.5,
-                max_tokens=500
+                max_tokens=500,
             )
-            return response.choices[0].message.content.strip()
+            return raw
 
         except Exception as e:
-            return f"Explanation unavailable: {str(e)}"
+            # Log the real error for operators; never show raw API errors to users.
+            print(f"  Explanation generation failed: {e}")
+            return EXPLANATION_FALLBACK
 
 
     # ─────────────────────────────────────────────────────────────────────
@@ -526,13 +562,12 @@ class LLMExplainer:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+            raw = self._complete(
+                [{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=120
+                max_tokens=120,
             )
-            return response.choices[0].message.content.strip()
+            return raw
 
         except Exception as e:
             return "Model assumes historical relationships remain stable. Structural breaks may cause actual outcomes to differ significantly."
@@ -571,13 +606,12 @@ class LLMExplainer:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+            raw = self._complete(
+                [{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=130
+                max_tokens=130,
             )
-            return response.choices[0].message.content.strip()
+            return raw
 
         except Exception as e:
             return (

@@ -1,0 +1,11 @@
+# Streamlit theme for streamlit_ui/app_ui.py.
+# Streamlit reads this from the directory it is launched in (the repo root,
+# locally and on Streamlit Community Cloud). It themes Streamlit's own widgets
+# (inputs, slider, select boxes, tabs) to match the app's custom dark CSS.
+[theme]
+base = "dark"
+primaryColor = "#e8a020"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1f1f1f"
+textColor = "#f0ede8"
+font = "sans serif"

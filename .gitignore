@@ -18,3 +18,4 @@ tests/__pycache__/test_scenario_engine.cpython-310-pytest-9.0.2.pyc
 __pycache__/
 .pytest_cache/
 docs/learning/01-honest-evaluation.md
+.venv-ui/
