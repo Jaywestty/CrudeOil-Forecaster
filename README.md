@@ -1,6 +1,6 @@
 # 🛢️ Crude Oil Price Scenario Forecaster
 
-> **Probabilistic macroeconomic simulation engine for Brent crude oil pricing — powered by SARIMAX econometrics, LLaMA 3.3, and live macro signal adjustment.**
+> **Probabilistic macroeconomic simulation engine for Brent crude oil pricing — powered by SARIMAX econometrics, gpt-oss-120b, and live macro signal adjustment.**
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)](https://crude-forecaster.streamlit.app/)
 [![API Docs](https://img.shields.io/badge/API%20Docs-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://crudeoil-forecaster.onrender.com/docs)
@@ -58,7 +58,7 @@ User types scenario query (plain English)
     ┌─────────┴──────────┐
     ▼                    ▼
 ┌──────────────┐   ┌──────────────┐
-│ LLaMA 3.3    │   │   SARIMAX    │
+│ gpt-oss-120b │   │   SARIMAX    │
 │ (Groq)       │   │   Model      │
 │              │   │   (.pkl)     │
 │ Assigns      │   │              │
@@ -96,7 +96,7 @@ This is the core upgrade that separates the system from a standard single-scenar
 
 ### Step 1 — LLM Probability Assignment
 
-Instead of picking one best-fit scenario, LLaMA 3.3 reads the query and distributes probability weights across all relevant scenarios:
+Instead of picking one best-fit scenario, gpt-oss-120b reads the query and distributes probability weights across all relevant scenarios:
 
 ```
 Query: "What if Middle East tensions rise while demand also grows?"
@@ -166,7 +166,7 @@ BEARISH_SCENARIOS = {"global_recession", "rate_hike"}
 
 ### Step 6 — LLM Explanation
 
-LLaMA 3.3 reads the actual model numbers and generates an institutional-style explanation covering the expected price, what drives the low vs high end of the range, and how macro signals shifted the probability weights.
+gpt-oss-120b reads the actual model numbers and generates an institutional-style explanation covering the expected price, what drives the low vs high end of the range, and how macro signals shifted the probability weights.
 
 ---
 
@@ -202,10 +202,10 @@ Model:         SARIMAX(1, 1, 1)(1, 0, 1, 52)
                 │  │  │   └──┴──┘ seasonal AR, I, MA terms
                 └──┴──┘ non-seasonal AR, differencing, MA terms
 
-Training data: 2006 – 2022  (80% of 1,043 weekly observations)
-Test period:   2022 – 2024  (20% holdout)
-Validation:    Rolling window cross-validation (10 folds)
-Test MAPE:     15.22%
+Production fit: all 1,043 weekly observations (2006 – Jan 2026)
+Forecasts start: the week after the latest observation in the dataset
+Evaluation:    walk-forward backtest, 198 weekly origins (2022 – 2025),
+               parameters re-estimated yearly (see "Model Evaluation")
 
 Exogenous variables (5 macro drivers):
   dollar_return   → DXY US Dollar Index weekly return
@@ -215,7 +215,7 @@ Exogenous variables (5 macro drivers):
   vix_diff        → CBOE VIX (fear index) weekly difference
 ```
 
-**Note on MAPE:** 15.22% on weekly crude oil is reasonable. Oil is one of the most volatile commodities in the world — driven by geopolitical events, OPEC decisions, and macro shocks that no statistical model can fully anticipate. The system's value is in scenario comparison and directional analysis, not point forecasting.
+**Note on accuracy:** an earlier version of this README quoted a 15.22% test MAPE. That number came from a single 209-week forecast that was given the *actual future* macro values, and a flat "no change" forecast scored better on the same weeks (12.39%). The honest walk-forward results are in [Model Evaluation](#-model-evaluation). The system's value is scenario comparison, not point forecasting.
 
 ---
 
@@ -224,7 +224,7 @@ Exogenous variables (5 macro drivers):
 ```
 Step 1 — LLM Probability Parsing
   Natural language query →
-  LLaMA 3.3 (Groq) →
+  gpt-oss-120b (Groq) →
   { scenario_key: probability_weight } across relevant scenarios
 
 Step 2 — Macro Signal Adjustment
@@ -237,7 +237,9 @@ Step 3 — Baseline Forecast
   "What happens if nothing changes"
 
 Step 4 — Per-Scenario SARIMAX Forecasts
-  For each scenario with weight > 5%:
+  Drop scenarios under 5% weight, renormalise the rest to sum to 1.0
+  Compute the no-shock baseline once, with its 80% / 95% statistical band
+  For each remaining scenario:
     Build exogenous shock matrix →
     SARIMAX → shocked forecast →
     Apply direction correction if needed
@@ -249,7 +251,7 @@ Step 5 — Weighted Distribution Assembly
 
 Step 6 — LLM Explanation
   Actual model numbers + scenario breakdown →
-  LLaMA 3.3 →
+  gpt-oss-120b →
   Institutional research note: expected price, range
   interpretation, macro signal effects
 
@@ -265,19 +267,28 @@ Step 7 — Response to UI
 ```
 crude-oil-forecaster/
 │
-├── api.py                  # FastAPI backend — all REST endpoints
-├── streamlit_app.py        # Streamlit frontend — probabilistic UI
+├── app.py                  # FastAPI backend — all REST endpoints
+├── run.py                  # Local launcher for the API (uvicorn)
 ├── scenario_engine.py      # Core engine — SARIMAX + direction correction
 │                           # + macro probability adjustment
-├── llm_explainer.py        # Groq/LLaMA — probabilistic parsing + explanation
+├── llm_explainer.py        # Groq (gpt-oss-120b) — parsing + explanation
 ├── utils.py                # Model loading, data helpers
-├── train.py                # Model training script (runs on Render build)
+├── train.py                # Fits the production model on all data (Render build)
+├── streamlit_ui/
+│   ├── app_ui.py           # Streamlit frontend — probabilistic UI
+│   └── requirements.txt    # UI-only dependencies (isolated from the API's)
 ├── models/
 │   └── sarimax_model.pkl   # Generated at build time — not in GitHub
 │
 ├── data/
-│   ├── oil_macro_weekly.csv        # Raw weekly data (2004–2024)
+│   ├── oil_macro_weekly.csv        # Weekly data (2006 – Jan 2026)
 │   └── oil_macro_transformed.csv  # Stationary transformed features
+│
+├── evaluation/             # Walk-forward backtest, challengers, conformal calibration
+├── reports/
+│   ├── backtest/report.md     # Accuracy vs baselines, promotion decisions
+│   └── calibration/report.md  # Interval coverage and calibration
+├── tests/                  # pytest suite (API, engine, LLM, evaluation)
 │
 ├── requirements.txt        # Pinned dependencies (Python 3.11 stable)
 ├── .python-version         # Pins Python 3.11.8 — fixes Render build
@@ -362,18 +373,24 @@ pip install -r requirements.txt
 GROQ_API_KEY=your_groq_key_here
 FRED_API_KEY=your_fred_key_here
 
-# 5. Train the model (once)
+# 5. Train the model (once, ~1 minute)
 python train.py
 
 # 6. Start the FastAPI backend
-uvicorn api:app --reload
+uvicorn app:app --reload
 # API: http://localhost:8000
 # Docs: http://localhost:8000/docs
 
 # 7. In a new terminal, install the Streamlit UI's dependencies and start it
-pip install -r streamlit_ui/requirements.txt --break-system-packages
+#    (use a separate virtual environment: the UI pins its own versions)
+pip install -r streamlit_ui/requirements.txt
 streamlit run streamlit_ui/app_ui.py
 # UI: http://localhost:8501
+
+# 8. Run the tests and (optionally) the evaluation
+pytest
+python -m evaluation.run_backtest      # ~8 min  -> reports/backtest/report.md
+python -m evaluation.run_calibration   # ~4 min  -> reports/calibration/report.md
 ```
 
 ---
@@ -391,27 +408,37 @@ streamlit run streamlit_ui/app_ui.py
 
 ---
 
-## 🧪 Model Validation
+## 🧪 Model Evaluation
+
+Every forecast below was made using only data available at the time (walk-forward,
+198 weekly origins from Jan 2022 to Oct 2025, parameters re-estimated yearly).
+Full reports: [`reports/backtest/report.md`](reports/backtest/report.md) and
+[`reports/calibration/report.md`](reports/calibration/report.md).
 
 ```
-Strategy: Rolling window cross-validation
-  10 folds across test period (2022–2024)
-  Each fold trains on all data up to that point
-  Forecasts 12 weeks ahead out-of-sample
+Point accuracy: MAE relative to a "price stays the same" forecast (< 1.00 = better)
+                          1 week   4 weeks   12 weeks
+  SARIMAX (as deployed)    1.012    1.024     1.045
+  Plain SARIMA             1.009    1.020     1.039
+  Ridge (lagged features)  1.015    1.044     0.998
+  Gradient-boosted trees   1.003    1.117     1.273
+  -> No model beats the no-change forecast significantly
+     (Diebold-Mariano, Holm-corrected, rule fixed before testing).
 
-Results:
-  Test MAPE:  15.22%
-  Benchmark:  ARIMA (univariate, no macro variables)
-  SARIMAX outperforms ARIMA on directional accuracy
-  and responds meaningfully to macro variable shocks
+Why the macro variables don't help:
+  - Dollar/oil weekly correlation: -0.39 in 2006-21, -0.06 in 2022-25
+    (VIX: -0.33 -> -0.07). The relationship broke after 2021.
+  - In this specification a macro shock shifts the price once;
+    it does not build up over the horizon.
 
-Known limitation:
-  The model learned from 2006–2022 data where high-VIX
-  episodes coincided with demand collapses (2008 crash,
-  2014–2016 glut). This causes counterintuitive price
-  direction for supply shock scenarios, addressed via
-  a post-processing direction correction layer.
+Statistical band (95%) coverage: ~85% at 1 week, ~92% at 4, ~97% at 12,
+  but only ~71-85% during the 2022 crisis (too narrow in turmoil).
 ```
+
+**What this means:** weekly Brent prices are close to unpredictable from these
+inputs, which matches the forecasting literature. The app is therefore framed as a
+**scenario analysis** tool: compare what-ifs against the no-shock baseline, and
+read the statistical band as a typical-conditions range.
 
 ---
 
@@ -489,6 +516,20 @@ They are not directly comparable.
 
 The system's value is in **relative scenario comparison** — how much a specific shock moves prices relative to the no-shock baseline — not in absolute price level accuracy. In a production deployment, the model would be retrained periodically so its starting observation stays close to the current market price.
 
+### Scenario spread vs statistical band
+
+The UI shows two different ranges, and they answer different questions:
+
+```
+Scenario spread      lowest -> highest scenario price at the final week.
+                     "How far apart are the what-ifs?" Not a probability range.
+
+80% / 95% band       the model's own uncertainty around the no-shock baseline.
+                     "Where would the price typically land if nothing special
+                     happens?" Close to nominal coverage on average, but too
+                     narrow in crises (see Model Evaluation).
+```
+
 ### What the forecast range tells you
 
 ```
@@ -516,7 +557,7 @@ Range $81–$90 with expected $87.23 means:
 Platform:       Render Web Service (Free Tier)
 Runtime:        Python 3.11.8 (pinned via .python-version)
 Build Command:  pip install -r requirements.txt && python train.py
-Start Command:  uvicorn api:app --host 0.0.0.0 --port $PORT
+Start Command:  uvicorn app:app --host 0.0.0.0 --port $PORT
 Model storage:  Trained fresh on every deploy — no binary in GitHub
 Auto-deploy:    Yes — triggers on every push to main branch
 
@@ -535,7 +576,7 @@ Free Tier behaviour:
 
 ```
 Platform:    Streamlit Community Cloud (Free)
-Entry point: app_ui.py
+Entry point: streamlit_ui/app_ui.py
 Secrets:     API_URL set via Streamlit Cloud dashboard
 Auto-deploy: Yes — triggers on every push to main branch
 ```
@@ -546,7 +587,8 @@ Auto-deploy: Yes — triggers on every push to main branch
 
 | Variable | Where to Set | Description |
 |---|---|---|
-| `GROQ_API_KEY` | Render → Environment | LLaMA 3.3 access via Groq |
+| `GROQ_API_KEY` | Render → Environment | gpt-oss-120b access via Groq |
+| `GROQ_MODEL` | Render → Environment (optional) | Override the Groq model (default `openai/gpt-oss-120b`) |
 | `FRED_API_KEY` | Render → Environment | FRED macroeconomic data |
 | `API_URL` | Streamlit Cloud → Secrets | Render backend URL |
 
@@ -581,7 +623,7 @@ The SARIMAX model learned from 2006–2022 data. During that window, supply disr
 XGBoost treats observations as independent rows — it has no concept of time order, cannot model seasonality, and has no native mechanism for injecting future exogenous shocks into a forecast. Prophet is built for daily business metrics with calendar patterns. SARIMAX was specifically designed for multivariate time series with external regressors — exactly what macro-driven oil price simulation requires.
 
 **Why Groq for the LLM?**
-Groq's LPU inference hardware returns LLaMA 3.3 70B responses in under 2 seconds. For a real-time UI where the LLM is called twice per simulation (once for parsing, once for explanation), latency matters. OpenAI GPT-4 at comparable capability costs more and responds slower on free tiers.
+Groq's LPU inference hardware returns responses in a few seconds, which matters for a real-time UI that calls the LLM several times per simulation. The model is `openai/gpt-oss-120b`, an open-weight reasoning model on Groq's free tier (same API key). It runs with low reasoning effort and extra token headroom so its reasoning never crowds out the answer.
 
 **Why train the model on Render instead of committing it?**
 The trained SARIMAX model is ~300MB — above GitHub's 100MB hard limit. Rather than using Git LFS or external storage, the model is retrained on every Render deploy via the build command. This keeps the repository clean, ensures the model always reflects the latest code and data, and avoids external storage dependencies. Trade-off: adds 5–10 minutes to build time per deploy.
@@ -594,8 +636,11 @@ The trained SARIMAX model is ~300MB — above GitHub's 100MB hard limit. Rather 
 Current limitations:
   - Scenario probabilities are LLM-estimated, not derived from
     options market implied volatility or historical scenario frequencies
-  - Model trained to 2022 — does not know post-2022 market structure
-  - 12-week forecast horizon — longer horizons lose reliability
+  - No model beats a no-change forecast for weekly prices (see Model Evaluation)
+  - Macro relationships learned before 2022 largely broke afterwards
+  - Statistical bands are too narrow during crises
+  - Data is a static snapshot (through Jan 2026); forecasts start from its last week
+  - 12-week forecast horizon — the range the backtests validated
   - Five fixed scenarios — cannot model novel events without mapping
     to one of the five (e.g. carbon taxes, SPR releases)
   - Direction correction is a heuristic, not a structural fix
@@ -604,7 +649,8 @@ Natural next upgrades:
   - Duration profiles: short-war vs prolonged-war shock decay
   - Options-implied probability calibration
   - Regime detection model for automatic macro context
-  - Retrain on data through 2024
+  - Scheduled data refresh and retraining
+  - Scenario shocks that build up over the horizon, calibrated on past events
 ```
 
 ---
