@@ -155,3 +155,10 @@ class TestRootModelInfo:
         info = client.get("/").json()["model_info"]
         assert "SARIMAX" in info["forecaster"]
         assert "gpt-oss-120b" in info["llm"]
+
+
+def test_probabilistic_response_has_historical_fields(api_client):
+    client, _, fake_groq_client = api_client
+    body = client.post("/simulate-probabilistic", json={"query": "q", "forecast_weeks": 12}).json()
+    assert "historical_context" in body
+    assert "not a forecast" in body["historical_note"]
