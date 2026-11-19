@@ -284,3 +284,176 @@ def test_promotion_requires_lower_error_and_significance_after_holm():
     assert d["A"] == "PROMOTE"
     assert d["B"] == "better, not significant"  # 0.03 alone would pass; Holm makes it 0.06
     assert d["C"] == "worse than naive"
+
+
+# ── Step 1c: multi-level intervals, conformal prediction, calibration ───────
+
+from evaluation import calibration, conformal  # noqa: E402
+
+
+def _fake_forecasts(sd, h=1, seed=0, model="M"):
+    """Backtest-shaped frame: flat $100 forecasts with log errors drawn at scale sd[i]."""
+    rng = np.random.default_rng(seed)
+    sd = np.asarray(sd, dtype=float)
+    origins = pd.date_range("2000-01-02", periods=len(sd), freq="W-SUN")
+    return pd.DataFrame(
+        {
+            "model": model,
+            "origin": origins,
+            "target_date": origins + pd.Timedelta(weeks=h),
+            "horizon": h,
+            "y_pred": 100.0,
+            "y_true": 100.0 * np.exp(rng.normal(0, 1, len(sd)) * sd),
+        }
+    )
+
+
+def _coverage(iv, method, level, start=None):
+    g = iv[(iv["method"] == method) & (iv["level"] == level)]
+    if start is not None:
+        g = g[g["origin"] >= start]
+    return ((g["y_true"] >= g["lo"]) & (g["y_true"] <= g["hi"])).mean()
+
+
+def test_conformal_quantile_uses_finite_sample_rank():
+    s = np.arange(1.0, 10.0)  # 9 scores
+    assert conformal.conformal_quantile(s, 0.5) == 5.0  # ceil(10 * 0.5) = 5th smallest
+    assert conformal.conformal_quantile(s, 0.95) == 9.0  # rank 10 > 9 -> capped at the max
+
+
+def test_interval_score_known_values():
+    np.testing.assert_allclose(metrics.interval_score([10.0], [8.0], [12.0], 0.8), [4.0])
+    np.testing.assert_allclose(metrics.interval_score([14.0], [8.0], [12.0], 0.8), [4.0 + 10 * 2.0])
+
+
+def test_hac_se_matches_iid_and_grows_with_autocorrelation():
+    rng = np.random.default_rng(4)
+    x = rng.normal(0, 1, 5000)
+    assert metrics.hac_mean_se(x, lags=4) == pytest.approx(x.std() / np.sqrt(len(x)), rel=0.15)
+    smooth = np.convolve(x, np.ones(8), mode="same")  # strongly autocorrelated
+    iid_se = smooth.std() / np.sqrt(len(smooth))
+    assert metrics.hac_mean_se(smooth, lags=8) > 2 * iid_se
+
+
+def test_conformal_intervals_never_use_unresolved_outcomes():
+    fc = _fake_forecasts(np.full(400, 0.05), h=4)
+    cutoff = fc["origin"].iloc[300]
+    base = conformal.conformal_intervals(fc)
+
+    tampered = fc.copy()
+    future = tampered["target_date"] > cutoff  # outcomes unknown at the cutoff origin
+    tampered.loc[future, "y_true"] *= 3.0
+    after = conformal.conformal_intervals(tampered)
+
+    key = ["origin", "level", "method"]
+    a = base[base["origin"] <= cutoff].set_index(key).sort_index()
+    b = after[after["origin"] <= cutoff].set_index(key).sort_index()
+    np.testing.assert_allclose(a[["lo", "hi"]].to_numpy(), b[["lo", "hi"]].to_numpy())
+
+
+def test_split_conformal_hits_nominal_coverage_on_stable_errors():
+    """Positive control: with exchangeable errors the guarantee must hold."""
+    fc = _fake_forecasts(np.full(1500, 0.05), h=1, seed=5)
+    iv = conformal.conformal_intervals(fc)
+    for level in (0.8, 0.95):
+        assert _coverage(iv, conformal.SPLIT, level) == pytest.approx(level, abs=0.03)
+
+
+def test_aci_recovers_faster_than_split_after_volatility_jump():
+    sd = np.r_[np.full(800, 0.02), np.full(800, 0.06)]  # error scale triples at week 800
+    fc = _fake_forecasts(sd, h=1, seed=6)
+    iv = conformal.conformal_intervals(fc, window=156, gamma=0.005)
+    shift = fc["origin"].iloc[800]
+    just_after = iv[(iv["origin"] >= shift) & (iv["origin"] < shift + pd.Timedelta(weeks=156))]
+    assert _coverage(just_after, conformal.ACI, 0.95) > _coverage(just_after, conformal.SPLIT, 0.95) + 0.03
+
+
+def test_conformal_rejects_mixed_models():
+    fc = pd.concat([_fake_forecasts([0.05] * 60, model="A"), _fake_forecasts([0.05] * 60, model="B")])
+    with pytest.raises(ValueError):
+        conformal.conformal_intervals(fc)
+
+
+def test_backtest_records_nested_multi_level_intervals():
+    y, X = _series()
+    out = run_backtest(y, X, [Naive()], BacktestConfig(first_origin=59, horizon=3, step=20, refit_every=None))
+    assert {"lo_50", "hi_50", "lo_80", "hi_80", "lo_95", "hi_95"} <= set(out.columns)
+    assert (out["lo_95"] <= out["lo_80"]).all() and (out["lo_80"] <= out["lo_50"]).all()
+    assert (out["hi_50"] <= out["hi_80"]).all() and (out["hi_80"] <= out["hi_95"]).all()
+    np.testing.assert_allclose(out["lo_95"], out["lower"])
+
+
+def test_calibration_summary_and_selection_rule():
+    rows = []
+    origins = pd.date_range("2020-01-05", periods=400, freq="W-SUN")
+    rng = np.random.default_rng(7)
+    y = 100 + rng.normal(0, 1, 400)
+    z95 = 1.959963984540054
+    for method, half in [("right", z95), ("too narrow", 0.5), ("too wide", 6.0)]:
+        rows.append(
+            pd.DataFrame(
+                {"model": "M", "method": method, "horizon": 1, "level": 0.95, "origin": origins,
+                 "y_true": y, "lo": 100 - half, "hi": 100 + half}
+            )
+        )
+    s = calibration.summarize_intervals(pd.concat(rows)).set_index("method")
+    assert s.loc["right", "calibrated"] and not s.loc["too narrow", "calibrated"]
+    assert not s.loc["too wide", "calibrated"]  # 100% coverage has zero variance, so 95% is outside its CI
+    choice = calibration.select_methods(s.reset_index(), levels=(0.95,), horizons=(1,))
+    assert choice.loc[0, "method"] == "right"
+
+
+# ── Step 1c experiment: volatility-scaled conformal ─────────────────────────
+
+
+def test_trailing_volatility_uses_only_past_returns():
+    y, _ = _series(n=100)
+    full = conformal.trailing_volatility(y, window=12)
+    short = conformal.trailing_volatility(y.iloc[:60], window=12)
+    pd.testing.assert_series_equal(full.iloc[:60], short)
+    expected = np.log(y).diff().iloc[48:60].std(ddof=1)
+    assert full.iloc[59] == pytest.approx(expected)
+    assert full.iloc[:12].isna().all()
+
+
+def test_vol_scaling_restores_coverage_in_both_regimes():
+    """Positive control: error scale switches between calm and turbulent blocks.
+
+    Given a scale that tracks the true volatility, scaled conformal must cover
+    ~95% in both kinds of block, while unscaled conformal under-covers in the
+    turbulent blocks.
+    """
+    sd = np.tile(np.r_[np.full(100, 0.02), np.full(100, 0.06)], 8)
+    fc = _fake_forecasts(sd, h=1, seed=8)
+    fc["vol"] = sd
+    plain = conformal.conformal_intervals(fc)
+    scaled = conformal.conformal_intervals(fc, scale_col="vol", include_native=False)
+    turbulent = fc.loc[fc.index % 200 >= 100, "origin"]
+    calm = fc.loc[fc.index % 200 < 100, "origin"]
+
+    def cov(iv, method, origins):
+        g = iv[(iv["method"] == method) & (iv["level"] == 0.95) & iv["origin"].isin(origins)]
+        return ((g["y_true"] >= g["lo"]) & (g["y_true"] <= g["hi"])).mean()
+
+    assert cov(scaled, conformal.SPLIT_VOL, turbulent) == pytest.approx(0.95, abs=0.03)
+    assert cov(scaled, conformal.SPLIT_VOL, calm) == pytest.approx(0.95, abs=0.03)
+    assert cov(plain, conformal.SPLIT, turbulent) < 0.90
+    assert set(scaled["method"]) == {conformal.SPLIT_VOL, conformal.ACI_VOL}  # no duplicate native rows
+
+
+def test_vol_scaling_rejects_non_positive_scale():
+    fc = _fake_forecasts(np.full(80, 0.05))
+    fc["vol"] = 0.0
+    with pytest.raises(ValueError):
+        conformal.conformal_intervals(fc, scale_col="vol")
+
+
+def test_regime_scorecard_verdict():
+    rows = []
+    for method, ok in [("split conformal", [True, False]), ("split conformal + vol-scaled", [True, True])]:
+        for regime, flag in zip(["2022 crisis", "2023+ calmer"], ok):
+            rows.append({"model": "M", "method": method, "horizon": 1, "level": 0.95,
+                         "regime": regime, "calibrated": flag})
+    card, verdict = calibration.regime_scorecard(pd.DataFrame(rows), levels=(0.95,), horizons=(1,))
+    assert card.iloc[0]["method"].endswith("vol-scaled")
+    assert verdict.startswith("**Success")
