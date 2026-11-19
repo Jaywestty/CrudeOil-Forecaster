@@ -51,9 +51,17 @@ def train_size(n_obs: int, train_frac: float = 0.8) -> int:
     return int(n_obs * train_frac)
 
 
+def content_hash(path: Path) -> str:
+    """SHA-256 of a text file with line endings normalised to LF.
+
+    Git on Windows may check files out with CRLF line endings; hashing raw
+    bytes would then give different fingerprints for identical data on
+    different machines.
+    """
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
 def data_fingerprint(data_dir: Path = DATA_DIR) -> dict[str, str]:
-    """SHA-256 of each input file, recorded with every backtest run."""
-    return {
-        name: hashlib.sha256((data_dir / name).read_bytes()).hexdigest()[:16]
-        for name in (WEEKLY_FILE, TRANSFORMED_FILE)
-    }
+    """Content hash of each input file, recorded with every backtest run."""
+    return {name: content_hash(data_dir / name) for name in (WEEKLY_FILE, TRANSFORMED_FILE)}
