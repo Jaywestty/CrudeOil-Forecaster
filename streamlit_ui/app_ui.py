@@ -1,24 +1,50 @@
-import streamlit as st
-import requests
+import html
 import os
+from datetime import datetime
+
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+import requests
+import streamlit as st
 
 # ── Page Configuration ─────────────────────────────────────────────
 st.set_page_config(
     page_title="Oil Price Scenario Forecaster",
     page_icon="🛢️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # ── API Configuration ──────────────────────────────────────────────
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
+# Horizons the walk-forward backtest validated (1–12 weeks).
+HORIZONS = [4, 8, 12]
 
-# ── Custom CSS ─────────────────────────────────────────────────────
-# Identical to your original — no changes here
+EXAMPLE_QUERIES = [
+    "What if OPEC cuts production by 10%?",
+    "What if Russia-Ukraine tensions escalate?",
+    "What if Middle East tensions rise and demand grows?",
+    "What if the Fed raises rates aggressively?",
+]
+
+# Facts from the walk-forward evaluation (reports/backtest, reports/calibration).
+EVALUATION_FACTS = [
+    "198 weekly forecasts, 2022–2025, made using only data available at the time",
+    "No model (SARIMAX, Ridge, gradient boosting) beat a no-change forecast",
+    "95% band coverage: ~85% at 1 week, ~92% at 4, ~97% at 12; lower in the 2022 crisis",
+]
+
+# ── Theme ──────────────────────────────────────────────────────────
+AMBER = "#e8a020"
+AMBER_LIGHT = "#f5c842"
+RED = "#e05252"
+GREEN = "#4caf82"
+MUTED = "#8a8580"
+GRID = "#1f1f1f"
+LINE = "#2e2e2e"
+SCENARIO_PALETTE = ["#5b8db8", "#b85b8d", "#5bb88d", "#b88d5b", "#8d5bb8"]
+
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap');
@@ -36,737 +62,565 @@ st.markdown("""
         --border:      #2e2e2e;
     }
 
-    .stApp {
-        background-color: var(--oil-black);
-        font-family: 'DM Sans', sans-serif;
-        color: var(--text-main);
-    }
-
-    header { visibility: visible !important; background: #0d0d0d !important; }
-    [data-testid="stHeader"]  { background: #0d0d0d !important; }
-    [data-testid="stToolbar"] { background: #0d0d0d !important; }
+    .stApp { background-color: var(--oil-black); font-family: 'DM Sans', sans-serif; color: var(--text-main); }
+    header, [data-testid="stHeader"], [data-testid="stToolbar"] { background: #0d0d0d !important; }
 
     .main-header {
-        font-family: 'DM Serif Display', serif;
-        font-size: 2.6rem; font-weight: 400;
-        color: var(--text-main); letter-spacing: -0.5px;
-        line-height: 1.1; margin-bottom: 0.2rem;
+        font-family: 'DM Serif Display', serif; font-size: 2.4rem; font-weight: 400;
+        color: var(--text-main); letter-spacing: -0.5px; line-height: 1.1; margin-bottom: 0.2rem;
     }
     .main-subheader {
-        font-family: 'DM Mono', monospace; font-size: 0.75rem;
-        color: var(--amber); letter-spacing: 3px;
-        text-transform: uppercase; margin-bottom: 1.5rem;
+        font-family: 'DM Mono', monospace; font-size: 0.72rem; color: var(--amber);
+        letter-spacing: 3px; text-transform: uppercase; margin-bottom: 1.2rem;
     }
 
     .price-card {
         background: var(--oil-card); border: 1px solid var(--border);
-        border-left: 3px solid var(--amber); border-radius: 6px;
-        padding: 1.2rem 1.5rem; margin-bottom: 1rem;
+        border-left: 3px solid var(--amber); border-radius: 6px; padding: 1.1rem 1.3rem; margin-bottom: 0.8rem;
     }
-    .price-label {
-        font-family: 'DM Mono', monospace; font-size: 0.65rem;
-        letter-spacing: 2px; text-transform: uppercase;
-        color: var(--text-muted); margin-bottom: 0.3rem;
+    .price-label, .metric-label {
+        font-family: 'DM Mono', monospace; font-size: 0.62rem; letter-spacing: 2px;
+        text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.35rem;
     }
-    .price-value { font-family: 'DM Serif Display', serif; font-size: 2.4rem; color: var(--amber-light); }
+    .price-value { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: var(--amber-light); }
     .price-unit  { font-size: 0.85rem; color: var(--text-muted); margin-left: 0.3rem; }
+    .small-mono  { font-family: 'DM Mono', monospace; font-size: 0.65rem; color: var(--text-muted); }
 
     .metric-card {
-        background: var(--oil-card); border: 1px solid var(--border);
-        border-radius: 6px; padding: 1rem 1.2rem; text-align: center;
+        background: var(--oil-card); border: 1px solid var(--border); border-radius: 6px;
+        padding: 0.95rem 1.1rem; text-align: center; height: 100%;
     }
-    .metric-label {
-        font-family: 'DM Mono', monospace; font-size: 0.6rem;
-        letter-spacing: 2px; text-transform: uppercase;
-        color: var(--text-muted); margin-bottom: 0.4rem;
-    }
-    .metric-value-up   { font-family:'DM Serif Display',serif; font-size:1.8rem; color:var(--green-up); }
-    .metric-value-down { font-family:'DM Serif Display',serif; font-size:1.8rem; color:var(--red-down); }
-    .metric-value-neu  { font-family:'DM Serif Display',serif; font-size:1.8rem; color:var(--amber-light); }
-    .metric-sub { font-size:0.75rem; color:var(--text-muted); margin-top:0.2rem; }
+    .metric-value { font-family: 'DM Serif Display', serif; font-size: 1.75rem; color: var(--amber-light); }
+    .metric-value.up   { color: var(--green-up); }
+    .metric-value.down { color: var(--red-down); }
+    .metric-value.text { font-size: 1.1rem; margin: 0.35rem 0; }
+    .metric-sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem; }
 
     .section-label {
-        font-family: 'DM Mono', monospace; font-size: 0.65rem;
-        letter-spacing: 3px; text-transform: uppercase; color: var(--amber);
-        margin-bottom: 0.8rem; padding-bottom: 0.5rem;
-        border-bottom: 1px solid var(--border);
+        font-family: 'DM Mono', monospace; font-size: 0.65rem; letter-spacing: 3px;
+        text-transform: uppercase; color: var(--amber); margin: 0.4rem 0 0.8rem 0;
+        padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
     }
 
     .explanation-box {
-        background: var(--oil-card); border: 1px solid var(--border);
-        border-radius: 6px; padding: 1.5rem; font-size: 0.95rem;
-        line-height: 1.75; color: var(--text-main);
-        font-family: 'DM Sans', sans-serif; font-weight: 300;
-        word-break: break-word;
-        overflow-wrap: break-word;
+        background: var(--oil-card); border: 1px solid var(--border); border-radius: 6px;
+        padding: 1.4rem; font-size: 0.95rem; line-height: 1.75; color: var(--text-main);
+        font-weight: 300; overflow-wrap: break-word;
     }
-    .uncertainty-box {
-        background: #1a1510; border: 1px solid #3a2e1a;
-        border-left: 3px solid var(--amber); border-radius: 6px;
-        padding: 1rem 1.2rem; font-size: 0.85rem; color: #c4b08a;
-        font-family: 'DM Sans', sans-serif; line-height: 1.6;
+    .note-box {
+        background: #1a1510; border: 1px solid #3a2e1a; border-left: 3px solid var(--amber);
+        border-radius: 6px; padding: 0.9rem 1.1rem; font-size: 0.85rem; color: #c4b08a; line-height: 1.6;
+        margin-bottom: 0.8rem;
     }
-
-    /* NEW — probability bar for breakdown display */
-    .prob-bar-container {
-        background: #2a2a2a; border-radius: 4px;
-        height: 6px; width: 100%; margin: 4px 0 8px 0;
-    }
-    .prob-bar-fill {
-        background: var(--amber); border-radius: 4px; height: 6px;
+    .honesty-banner {
+        background: #14181c; border: 1px solid #263039; border-left: 3px solid #5b8db8;
+        border-radius: 6px; padding: 0.7rem 1rem; font-size: 0.82rem; color: #a9b7c4; margin-bottom: 1rem;
     }
 
-    .badge-high   { background:#1a3a2a; color:#4caf82; padding:2px 10px; border-radius:20px;
-                    font-size:0.7rem; font-family:'DM Mono',monospace; letter-spacing:1px; text-transform:uppercase; }
-    .badge-medium { background:#2a2a1a; color:#e8a020; padding:2px 10px; border-radius:20px;
-                    font-size:0.7rem; font-family:'DM Mono',monospace; letter-spacing:1px; text-transform:uppercase; }
-    .badge-low    { background:#3a1a1a; color:#e05252; padding:2px 10px; border-radius:20px;
-                    font-size:0.7rem; font-family:'DM Mono',monospace; letter-spacing:1px; text-transform:uppercase; }
+    .prob-row { margin-bottom: 0.85rem; }
+    .prob-head { display: flex; justify-content: space-between; font-family: 'DM Mono', monospace; font-size: 0.72rem; }
+    .prob-bar-container { background: #2a2a2a; border-radius: 4px; height: 6px; flex: 1; }
+    .prob-bar-fill { background: var(--amber); border-radius: 4px; height: 6px; }
 
-    .shock-row {
-        display: flex; justify-content: space-between;
-        padding: 0.4rem 0; border-bottom: 1px solid var(--border);
-        font-family: 'DM Mono', monospace; font-size: 0.78rem;
+    .info-row {
+        display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0;
+        border-bottom: 1px solid var(--border); font-family: 'DM Mono', monospace; font-size: 0.74rem;
     }
-    .shock-var { color: var(--text-muted); }
-    .shock-pos { color: var(--red-down); }
-    .shock-neg { color: var(--green-up); }
+    .info-key { color: var(--text-muted); }
 
-    .stSidebar { background: var(--oil-dark) !important; }
     [data-testid="stSidebar"] { background: var(--oil-dark); }
-
     .stTextArea textarea {
         background: var(--oil-card) !important; color: var(--text-main) !important;
         border: 1px solid var(--border) !important; border-radius: 6px !important;
-        font-family: 'DM Sans', sans-serif !important;
     }
-    .stButton button {
+    .stButton button[kind="primary"] {
         background: var(--amber) !important; color: var(--oil-black) !important;
-        font-family: 'DM Mono', monospace !important; font-size: 0.75rem !important;
-        letter-spacing: 2px !important; text-transform: uppercase !important;
-        border: none !important; border-radius: 4px !important;
-        padding: 0.6rem 1.5rem !important; font-weight: 500 !important; width: 100% !important;
+        font-family: 'DM Mono', monospace !important; letter-spacing: 2px !important;
+        text-transform: uppercase !important; border: none !important; font-weight: 500 !important;
     }
-    .stButton button:hover { background: var(--amber-light) !important; }
-    .stSelectbox select, [data-baseweb="select"] {
-        background: var(--oil-card) !important; color: var(--text-main) !important;
-        border-color: var(--border) !important;
+    .stButton button[kind="secondary"] {
+        background: transparent !important; color: var(--text-muted) !important;
+        border: 1px solid var(--border) !important; font-size: 0.78rem !important;
     }
-    .stSlider [data-baseweb="slider"] { color: var(--amber) !important; }
+    .stButton button[kind="secondary"]:hover { color: var(--amber-light) !important; border-color: var(--amber) !important; }
     hr { border-color: var(--border) !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Helper Functions ───────────────────────────────────────────────
-# These are identical to your original versions
+# ── Helpers ────────────────────────────────────────────────────────
 
-def check_api_health():
+def safe_text(text) -> str:
+    """Escape model/API text before placing it inside HTML.
+
+    LLM output is untrusted: escaping stops it injecting markup. '$' becomes an
+    HTML entity because Streamlit would otherwise treat $...$ as LaTeX.
+    """
+    escaped = html.escape(str(text or ""))
+    return escaped.replace("$", "&#36;").replace("\n", "<br>")
+
+
+def set_query(text: str) -> None:
+    """Button callback. Callbacks run before the rerun, so they may change a
+    widget's value; assigning after the text box is drawn would raise."""
+    st.session_state["query"] = text
+
+
+def short_name(name: str) -> str:
+    return name.split("(")[0].strip()
+
+
+def money(x: float, decimals: int = 2) -> str:
+    return f"&#36;{x:,.{decimals}f}"
+
+
+def metric_card(label: str, value: str, sub: str = "", css: str = "") -> str:
+    return (
+        f"<div class='metric-card'><div class='metric-label'>{label}</div>"
+        f"<div class='metric-value {css}'>{value}</div><div class='metric-sub'>{sub}</div></div>"
+    )
+
+
+# ── API calls ──────────────────────────────────────────────────────
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_api_status():
+    """Root endpoint: online flag plus model info (cached briefly)."""
     try:
         r = requests.get(f"{API_URL}/", timeout=60)
-        return r.status_code == 200
-    except:
-        return False
+        if r.status_code == 200:
+            return True, r.json().get("model_info", {})
+    except requests.RequestException:
+        pass
+    return False, {}
 
-@st.cache_data(ttl=300)
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_current_price():
-    """
-    Fetch current Brent price from the API.
-
-    @st.cache_data(ttl=300):
-      Streamlit reruns this entire script on every widget interaction.
-      Without caching, get_current_price() would call the API dozens of
-      times per session. The cache holds the result for 300 seconds (5 min)
-      then refreshes automatically — price stays current without hammering
-      the API on every click.
-
-    Timeout is 30s — the /current-price endpoint calls FRED internally
-    which can take a few seconds on cold API starts.
-    """
+    """Current Brent price (live from FRED via the API, or dataset fallback)."""
     try:
         r = requests.get(f"{API_URL}/current-price", timeout=30)
         if r.status_code == 200:
             return r.json()
-        return {"price": "N/A", "date": "N/A", "unit": "USD/barrel", "source": "dataset fallback"}
-    except:
-        return {"price": "N/A", "date": "N/A", "unit": "USD/barrel", "source": "dataset fallback"}
+    except requests.RequestException:
+        pass
+    return {"price": None, "date": "N/A", "unit": "USD/barrel", "source": "unavailable"}
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_scenarios():
     try:
-        r = requests.get(f"{API_URL}/scenarios", timeout=5)
-        return r.json()["scenarios"]
-    except:
-        return []
+        r = requests.get(f"{API_URL}/scenarios", timeout=10)
+        if r.status_code == 200:
+            return r.json()["scenarios"]
+    except requests.RequestException:
+        pass
+    return []
 
-# ── Probabilistic simulation call ─────────────────────────────────
 
 def run_probabilistic_simulation(query, forecast_weeks):
-    """
-    Call the new /simulate-probabilistic endpoint.
-
-    Returns the full probabilistic result including:
-    - expected price, range (low/high)
-    - scenario breakdown with probabilities
-    - original vs adjusted probabilities
-    - macro adjustment log
-    - weighted weekly forecast
-    """
     try:
         r = requests.post(
             f"{API_URL}/simulate-probabilistic",
             json={"query": query, "forecast_weeks": forecast_weeks},
-            timeout=90   # slightly longer — runs SARIMAX multiple times
+            timeout=120,
         )
         if r.status_code == 200:
             return r.json(), None
-        return None, r.json().get("detail", "Unknown error")
+        try:
+            return None, r.json().get("detail", f"HTTP {r.status_code}")
+        except ValueError:
+            return None, f"HTTP {r.status_code}"
     except requests.exceptions.ConnectionError:
-        return None, "Cannot connect to API."
-    except Exception as e:
+        return None, "Cannot connect to the API. It may be waking up; try again in a minute."
+    except requests.RequestException as e:
         return None, str(e)
 
 
-# ── Chart Builders ─────────────────────────────────────────────────
-# Original charts unchanged
+# ── Data shaping ───────────────────────────────────────────────────
 
-def make_forecast_chart(weekly_forecasts, current_price, scenario_name):
-    weeks    = [w["week"]     for w in weekly_forecasts]
-    baseline = [w["baseline"] for w in weekly_forecasts]
-    scenario = [w["scenario"] for w in weekly_forecasts]
+def x_axis(data):
+    """Calendar dates when the API provides them, otherwise week numbers."""
+    dates = data.get("forecast_dates")
+    if dates:
+        return pd.to_datetime(dates), "Forecast week (date)"
+    return list(range(1, data["forecast_weeks"] + 1)), "Forecast week"
 
-    fig = go.Figure()
-    fig.add_hline(
-        y=current_price, line_dash="dot", line_color="#8a8580", line_width=1,
-        annotation_text=f"  Current ${current_price:.2f}",
-        annotation_font_color="#8a8580", annotation_font_size=10
-    )
-    fig.add_trace(go.Scatter(
-        x=weeks, y=baseline, mode="lines", name="Baseline (no shock)",
-        line=dict(color="#8a8580", width=2, dash="dash"),
-        hovertemplate="Week %{x}<br>Baseline: $%{y:.2f}<extra></extra>"
-    ))
-    sc = "#e05252" if scenario[-1] < baseline[-1] else "#4caf82"
-    fig.add_trace(go.Scatter(
-        x=weeks, y=scenario, mode="lines+markers", name=scenario_name,
-        line=dict(color=sc, width=2.5), marker=dict(size=5, color=sc),
-        hovertemplate="Week %{x}<br>Scenario: $%{y:.2f}<extra></extra>"
-    ))
-    rgb = tuple(int(sc.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-    fig.add_trace(go.Scatter(
-        x=weeks + weeks[::-1], y=scenario + baseline[::-1],
-        fill="toself",
-        fillcolor=f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.08)",
-        line=dict(color="rgba(0,0,0,0)"),
-        showlegend=False, hoverinfo="skip"
-    ))
+
+def scenario_path(data, item):
+    """Full weekly path from the API; older APIs only sent the final price."""
+    if item.get("forecast"):
+        return item["forecast"]
+    n, start, end = data["forecast_weeks"], data["current_price"], item["week12_price"]
+    return [start + (end - start) * (w / n) for w in range(1, n + 1)]
+
+
+def final_probabilities(data):
+    return data.get("final_probabilities") or {k: v["probability"] for k, v in data["scenario_breakdown"].items()}
+
+
+def forecast_table(data) -> pd.DataFrame:
+    x, _ = x_axis(data)
+    df = pd.DataFrame({"Week": range(1, data["forecast_weeks"] + 1)})
+    if data.get("forecast_dates"):
+        df["Date"] = [d.date() for d in x]
+    df["Baseline"] = data["baseline_forecast"]
+    band = data.get("statistical_band")
+    if band:
+        df["80% low"], df["80% high"] = band["level_80"]["lower"], band["level_80"]["upper"]
+        df["95% low"], df["95% high"] = band["level_95"]["lower"], band["level_95"]["upper"]
+    df["Expected"] = data["weighted_forecast"]
+    df["Expected − baseline"] = df["Expected"] - df["Baseline"]
+    for key, item in data["scenario_breakdown"].items():
+        df[short_name(item["name"])] = scenario_path(data, item)
+    return df.set_index("Week")
+
+
+# ── Charts ─────────────────────────────────────────────────────────
+
+def _base_layout(fig, x_title, height):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="DM Mono, monospace", color="#8a8580", size=10),
-        legend=dict(font=dict(size=10, color="#8a8580"), bgcolor="rgba(0,0,0,0)",
-                    bordercolor="#2e2e2e", borderwidth=1),
-        xaxis=dict(title="Forecast Week", gridcolor="#1f1f1f", linecolor="#2e2e2e",
-                   tickcolor="#2e2e2e", title_font=dict(size=10)),
-        yaxis=dict(title="Brent Price (USD/barrel)", gridcolor="#1f1f1f",
-                   linecolor="#2e2e2e", tickcolor="#2e2e2e",
+        font=dict(family="DM Mono, monospace", color=MUTED, size=10),
+        legend=dict(font=dict(size=9, color=MUTED), bgcolor="rgba(0,0,0,0)", orientation="h",
+                    yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(title=x_title, gridcolor=GRID, linecolor=LINE, title_font=dict(size=10)),
+        yaxis=dict(title="Brent (USD/barrel)", gridcolor=GRID, linecolor=LINE,
                    title_font=dict(size=10), tickprefix="$"),
-        hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10), height=350
-    )
-    return fig
-
-def make_delta_chart(weekly_forecasts):
-    weeks  = [f"W{w['week']}" for w in weekly_forecasts]
-    deltas = [w["change"]     for w in weekly_forecasts]
-    colors = ["#e05252" if d < 0 else "#4caf82" for d in deltas]
-
-    fig = go.Figure(go.Bar(
-        x=weeks, y=deltas, marker_color=colors,
-        hovertemplate="Week %{x}<br>Δ Price: $%{y:.2f}<extra></extra>"
-    ))
-    fig.add_hline(y=0, line_color="#2e2e2e", line_width=1)
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="DM Mono, monospace", color="#8a8580", size=10),
-        xaxis=dict(gridcolor="#1f1f1f", linecolor="#2e2e2e"),
-        yaxis=dict(gridcolor="#1f1f1f", linecolor="#2e2e2e",
-                   tickprefix="$", title="Price Change vs Baseline"),
-        margin=dict(l=10, r=10, t=20, b=10), height=220, showlegend=False
+        hovermode="x unified", margin=dict(l=10, r=10, t=40, b=10), height=height,
     )
     return fig
 
 
-# ── NEW: Probabilistic fan chart ──────────────────────────────────
-
-def make_probabilistic_chart(data):
-    """
-    Fan chart for probabilistic mode.
-
-    Shows:
-    - Baseline (dashed grey) — what happens with no shock
-    - Each individual scenario (thin dotted lines, muted colors)
-    - Weighted expected forecast (solid amber line) — the headline number
-    - Shaded band between min and max scenario — the uncertainty range
-
-    Reading this chart:
-    - If the amber line is above baseline → net bullish outcome
-    - If amber line is below baseline → net bearish outcome
-    - The width of the shaded band shows how much uncertainty exists
-    - Wider band = more scenario disagreement = more uncertainty
-    """
-    weeks    = list(range(1, data["forecast_weeks"] + 1))
-    weighted = data["weighted_forecast"]
-    baseline = data["baseline_forecast"]
-
+def make_forecast_chart(data):
+    """Baseline with statistical bands, each scenario's path, and the weighted expectation."""
+    x, x_title = x_axis(data)
+    xs = list(x)
     fig = go.Figure()
 
-    # Current price reference line
-    fig.add_hline(
-        y=data["current_price"], line_dash="dot",
-        line_color="#8a8580", line_width=1,
-        annotation_text=f"  Current ${data['current_price']:.2f}",
-        annotation_font_color="#8a8580", annotation_font_size=10
-    )
+    band = data.get("statistical_band")
+    if band:
+        for level, alpha in (("level_95", 0.10), ("level_80", 0.20)):
+            lo, hi = band[level]["lower"], band[level]["upper"]
+            fig.add_trace(go.Scatter(
+                x=xs + xs[::-1], y=hi + lo[::-1], fill="toself",
+                fillcolor=f"rgba(138,133,128,{alpha})", line=dict(color="rgba(0,0,0,0)"),
+                name=f"{level[-2:]}% statistical band", hoverinfo="skip",
+            ))
 
-    # Baseline
+    fig.add_hline(
+        y=data["current_price"], line_dash="dot", line_color=MUTED, line_width=1,
+        annotation_text=f"  Latest ${data['current_price']:.2f}",
+        annotation_font_color=MUTED, annotation_font_size=10,
+    )
     fig.add_trace(go.Scatter(
-        x=weeks, y=baseline, mode="lines",
-        name="Baseline (no shock)",
-        line=dict(color="#8a8580", width=1.5, dash="dash"),
-        hovertemplate="Week %{x}<br>Baseline: $%{y:.2f}<extra></extra>"
+        x=xs, y=data["baseline_forecast"], mode="lines", name="Baseline (no shock)",
+        line=dict(color=MUTED, width=1.5, dash="dash"),
+        hovertemplate="Baseline: $%{y:.2f}<extra></extra>",
     ))
 
-    # Individual scenario lines — thin and muted so they don't overpower
-    # the weighted expected line which is the real headline
-    scenario_palette = ["#3a5a7a", "#7a3a5a", "#3a7a5a", "#7a5a3a", "#5a3a7a"]
-    for i, (key, item) in enumerate(data["scenario_breakdown"].items()):
-        color = scenario_palette[i % len(scenario_palette)]
-        # Use linear interpolation from current price to week-12 for display
-        # (we only have week-12 prices per scenario in the response,
-        #  not full weekly arrays — this approximates the curve visually)
-        start = data["current_price"]
-        end   = item["week12_price"]
-        line_y = [start + (end - start) * (w / weeks[-1]) for w in weeks]
-
+    ordered = sorted(data["scenario_breakdown"].items(), key=lambda kv: -kv[1]["probability"])
+    for i, (_, item) in enumerate(ordered):
         fig.add_trace(go.Scatter(
-            x=weeks, y=line_y, mode="lines",
-            name=f"{item['name'].split('(')[0].strip()} ({item['probability']*100:.0f}%)",
-            line=dict(color=color, width=1, dash="dot"),
-            opacity=0.55,
-            hovertemplate=(
-                f"{item['name']}<br>Week %{{x}}<br>~$%{{y:.2f}}<extra></extra>"
-            )
+            x=xs, y=scenario_path(data, item), mode="lines",
+            name=f"{short_name(item['name'])} ({item['probability'] * 100:.0f}%)",
+            line=dict(color=SCENARIO_PALETTE[i % len(SCENARIO_PALETTE)], width=1.4, dash="dot"),
+            hovertemplate=f"{short_name(item['name'])}: $%{{y:.2f}}<extra></extra>",
         ))
 
-    # Weighted expected forecast — the main line, amber, prominent
     fig.add_trace(go.Scatter(
-        x=weeks, y=weighted, mode="lines+markers",
-        name="Expected (probability-weighted)",
-        line=dict(color="#e8a020", width=3),
-        marker=dict(size=4, color="#e8a020"),
-        hovertemplate="Week %{x}<br>Expected: $%{y:.2f}<extra></extra>"
+        x=xs, y=data["weighted_forecast"], mode="lines+markers", name="Expected (probability-weighted)",
+        line=dict(color=AMBER, width=3), marker=dict(size=4, color=AMBER),
+        hovertemplate="Expected: $%{y:.2f}<extra></extra>",
     ))
+    return _base_layout(fig, x_title, 430)
 
+
+def make_probability_chart(data):
+    """LLM estimate → after macro adjustment → final weights, per scenario."""
+    names = {k: short_name(v["name"]) for k, v in data["scenario_breakdown"].items()}
+    keys = list(dict.fromkeys(
+        list(data.get("original_probabilities", {})) + list(data.get("adjusted_probabilities", {}))
+    ))
+    final = final_probabilities(data)
+    stages = [
+        ("LLM estimate", data.get("original_probabilities", {}), "#5a5652"),
+        ("After macro signals", data.get("adjusted_probabilities", {}), "#a07018"),
+        ("Final (used)", final, AMBER),
+    ]
+    fig = go.Figure()
+    total_orig = sum(data.get("original_probabilities", {}).values()) or 1.0
+    for label, probs, color in stages:
+        scale = total_orig if label == "LLM estimate" else 1.0
+        fig.add_trace(go.Bar(
+            y=[names.get(k, k.replace("_", " ").title()) for k in keys],
+            x=[100 * probs.get(k, 0) / scale for k in keys],
+            name=label, orientation="h", marker_color=color,
+            hovertemplate=f"{label}: %{{x:.1f}}%<extra></extra>",
+        ))
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="DM Mono, monospace", color="#8a8580", size=10),
-        legend=dict(font=dict(size=9, color="#8a8580"), bgcolor="rgba(0,0,0,0)",
-                    bordercolor="#2e2e2e", borderwidth=1),
-        xaxis=dict(title="Forecast Week", gridcolor="#1f1f1f", linecolor="#2e2e2e",
-                   title_font=dict(size=10)),
-        yaxis=dict(title="Brent Price (USD/barrel)", gridcolor="#1f1f1f",
-                   linecolor="#2e2e2e", title_font=dict(size=10), tickprefix="$"),
-        hovermode="x unified",
-        margin=dict(l=10, r=10, t=20, b=10), height=380
+        barmode="group", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="DM Mono, monospace", color=MUTED, size=10),
+        legend=dict(font=dict(size=9, color=MUTED), orientation="h", y=1.08, x=0),
+        xaxis=dict(title="Probability (%)", gridcolor=GRID, linecolor=LINE, ticksuffix="%"),
+        yaxis=dict(gridcolor=GRID, linecolor=LINE, autorange="reversed"),
+        margin=dict(l=10, r=10, t=30, b=10), height=80 + 55 * max(len(keys), 1),
     )
     return fig
 
 
-# ── NEW: Probabilistic results renderer ───────────────────────────
+# ── Results ────────────────────────────────────────────────────────
 
-def render_probabilistic_results(data):
-    """
-    Render results for /simulate-probabilistic — multi-scenario mode.
+def render_summary(data):
+    n = data["forecast_weeks"]
+    dates = data.get("forecast_dates")
+    when = f"week {n}" + (f" · {dates[-1]}" if dates else "")
+    diff = data["price_expected"] - data["baseline_week12"]
+    sign = "+" if diff >= 0 else "−"
+    final = final_probabilities(data)
+    primary = data["primary_driver"]
 
-    Layout:
-    Row 1 — 4 metric cards: expected price, range, vs baseline, primary driver
-    Row 2 — fan chart (left) + scenario probability breakdown (right)
-    Row 3 — explanation + uncertainty + weighted forecast table
-    """
-
-    # ── Row 1 — summary metrics ──────────────────────────────────
-    diff_from_baseline = data["price_expected"] - data["baseline_week12"]
-    diff_css  = "metric-value-down" if diff_from_baseline < 0 else "metric-value-up"
-    diff_sign = "+" if diff_from_baseline >= 0 else ""
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Expected Price (Wk 12)</div>
-            <div class='metric-value-neu'>${data['price_expected']:.2f}</div>
-            <div class='metric-sub'>probability-weighted</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col2:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Forecast Range</div>
-            <div class='metric-value-neu' style='font-size:1.4rem;'>
-                ${data['price_low']:.0f} – ${data['price_high']:.0f}
-            </div>
-            <div class='metric-sub'>low / high scenario</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col3:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>vs Baseline (Wk 12)</div>
-            <div class='{diff_css}'>{diff_sign}${diff_from_baseline:.2f}</div>
-            <div class='metric-sub'>baseline ${data['baseline_week12']:.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
-        primary_prob = data["adjusted_probabilities"].get(
-            data["primary_driver"], 0
-        )
-        short_name   = data["primary_driver_name"].split("(")[0].strip()
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div class='metric-label'>Primary Driver</div>
-            <div style='font-family:DM Serif Display,serif; font-size:1.05rem;
-                        color:var(--amber-light); margin:0.4rem 0;'>
-                {short_name}
-            </div>
-            <div class='metric-sub'>{primary_prob*100:.0f}% weight</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Row 2 — fan chart + probability breakdown ────────────────
-    col_chart, col_breakdown = st.columns([3, 2])
-
-    with col_chart:
-        st.markdown(
-            "<div class='section-label'>Probabilistic Forecast — "
-            "Expected Price & Scenario Lines</div>",
-            unsafe_allow_html=True
-        )
-        st.plotly_chart(make_probabilistic_chart(data), use_container_width=True)
-
-        # Show what macro signals shifted
-        if data.get("macro_adjustments"):
-            st.markdown(
-                "<div class='section-label' style='margin-top:0.5rem;'>"
-                "Macro Signal Adjustments Applied</div>",
-                unsafe_allow_html=True
-            )
-            for _, note in data["macro_adjustments"].items():
-                st.markdown(f"""
-                <div class='shock-row'>
-                    <span class='shock-var' style='font-size:0.7rem;'>{note}</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-    with col_breakdown:
-        st.markdown(
-            "<div class='section-label'>Scenario Probability Breakdown</div>",
-            unsafe_allow_html=True
-        )
-
-        # Sort by probability descending so the dominant scenario is at top
-        sorted_breakdown = sorted(
-            data["scenario_breakdown"].items(),
-            key=lambda x: x[1]["probability"],
-            reverse=True
-        )
-
-        for key, item in sorted_breakdown:
-            prob_pct  = item["probability"] * 100
-            price_val = item["week12_price"]
-            diff      = price_val - data["baseline_week12"]
-            diff_sign = "+" if diff >= 0 else ""
-            diff_col  = "#e05252" if diff < 0 else "#4caf82"
-            short     = item["name"].split("(")[0].strip()
-
-            st.markdown(f"""
-            <div style='margin-bottom:0.9rem;'>
-                <div style='display:flex; justify-content:space-between;
-                            font-family:DM Mono,monospace; font-size:0.7rem;'>
-                    <span style='color:#f0ede8;'>{short}</span>
-                    <span style='color:{diff_col};'>
-                        ${price_val:.2f} ({diff_sign}${diff:.2f})
-                    </span>
-                </div>
-                <div style='display:flex; align-items:center;
-                            gap:8px; margin-top:4px;'>
-                    <div class='prob-bar-container' style='flex:1;'>
-                        <div class='prob-bar-fill'
-                             style='width:{prob_pct:.0f}%;'></div>
-                    </div>
-                    <span style='font-family:DM Mono,monospace; font-size:0.65rem;
-                                 color:#8a8580; min-width:32px;'>
-                        {prob_pct:.0f}%
-                    </span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # Show probability adjustments only if macro signals actually changed anything
-        orig = data.get("original_probabilities", {})
-        adj  = data.get("adjusted_probabilities", {})
-        diffs = {k: adj.get(k, 0) - orig.get(k, 0) for k in adj if abs(adj.get(k, 0) - orig.get(k, 0)) > 0.01}
-
-        if diffs:
-            st.markdown(
-                "<div class='section-label' style='margin-top:1rem;'>"
-                "Probability Shifts from Macro Signals</div>",
-                unsafe_allow_html=True
-            )
-            for k, change in diffs.items():
-                sign = "+" if change >= 0 else ""
-                css  = "shock-pos" if change > 0 else "shock-neg"
-                st.markdown(f"""
-                <div class='shock-row'>
-                    <span class='shock-var'>{k}</span>
-                    <span class='{css}'>{sign}{change*100:.1f}%</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Row 3 — explanation + uncertainty + table ────────────────
-    col_exp, col_unc = st.columns([3, 2])
-
-    with col_exp:
-        st.markdown("<div class='section-label'>Economic Explanation</div>",
-                    unsafe_allow_html=True)
-        # Escape dollar signs before injecting into HTML div.
-        # Streamlit's markdown engine treats $...$ as LaTeX math notation
-        # and strips the content, showing a backtick instead.
-        # Replacing $ with the HTML entity &#36; bypasses this completely.
-        safe_explanation = data["explanation"].replace("$", "&#36;")
-        st.markdown(f"<div class='explanation-box'>{safe_explanation}</div>",
-                    unsafe_allow_html=True)
-
-    with col_unc:
-        st.markdown("<div class='section-label'>Uncertainty Note</div>",
-                    unsafe_allow_html=True)
-        safe_uncertainty = data["uncertainty_note"].replace("$", "&#36;")
-        st.markdown(f"<div class='uncertainty-box'>⚠️ {safe_uncertainty}</div>",
-                    unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("<div class='section-label'>Weighted Forecast Table</div>",
-                    unsafe_allow_html=True)
-
-        # Build table from weighted_forecast + baseline_forecast arrays
-        table_rows = [
-            {
-                "Week":          i + 1,
-                "Baseline ($)":  round(b, 2),
-                "Expected ($)":  round(w, 2),
-                "Δ ($)":         round(w - b, 2)
-            }
-            for i, (b, w) in enumerate(
-                zip(data["baseline_forecast"], data["weighted_forecast"])
-            )
-        ]
-        df = pd.DataFrame(table_rows).set_index("Week")
-        st.dataframe(
-            df.style.format("${:.2f}").applymap(
-                lambda v: "color: #e05252" if v < 0 else "color: #4caf82",
-                subset=["Δ ($)"]
-            ),
-            use_container_width=True, height=250
-        )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(metric_card(f"Expected price", money(data["price_expected"]), when), unsafe_allow_html=True)
+    c2.markdown(metric_card(
+        "Scenario spread", f"{money(data['price_low'], 0)} – {money(data['price_high'], 0)}",
+        "lowest / highest scenario"), unsafe_allow_html=True)
+    band = data.get("statistical_band")
+    if band:
+        lo, hi = band["level_80"]["lower"][-1], band["level_80"]["upper"][-1]
+        c3.markdown(metric_card("80% statistical band", f"{money(lo, 0)} – {money(hi, 0)}",
+                                f"around the baseline, {when}"), unsafe_allow_html=True)
+    else:
+        c3.markdown(metric_card("vs baseline", f"{sign}{money(abs(diff))}",
+                                f"baseline {money(data['baseline_week12'])}",
+                                "up" if diff >= 0 else "down"), unsafe_allow_html=True)
+    c4.markdown(metric_card("Primary driver", safe_text(short_name(data["primary_driver_name"])),
+                            f"{final.get(primary, 0) * 100:.0f}% weight · {sign}{money(abs(diff))} vs baseline",
+                            "text"), unsafe_allow_html=True)
 
 
-# ── Main App ───────────────────────────────────────────────────────
-
-def main():
-
-    api_online = check_api_health()
-    price_data = get_current_price()
-    scenarios  = get_scenarios()
-
-    # ── Sidebar — identical to original ───────────────────────────
-    with st.sidebar:
-        st.markdown("""
-        <div style='font-family: DM Serif Display, serif;
-                    font-size:1.4rem; color:#f0ede8; margin-bottom:0.2rem;'>
-            🛢️ Oil Forecaster
-        </div>
-        <div style='font-family: DM Mono, monospace; font-size:0.6rem;
-                    letter-spacing:2px; color:#e8a020;
-                    text-transform:uppercase; margin-bottom:1.5rem;'>
-            Scenario Simulation System
-        </div>
-        """, unsafe_allow_html=True)
-
-        status_color = "#4caf82" if api_online else "#e05252"
-        status_text  = "API ONLINE" if api_online else "API OFFLINE"
-        st.markdown(f"""
-        <div style='font-family:DM Mono,monospace; font-size:0.65rem;
-                    color:{status_color}; letter-spacing:2px; margin-bottom:1rem;'>
-            ● {status_text}
-        </div>
-        """, unsafe_allow_html=True)
-
-        if not api_online:
-            st.warning("⏳ API is waking up. Wait 30–60 seconds then refresh.")
-
-        st.markdown("---")
-
-        # Show a source indicator so the user knows if the price is
-        # live from FRED or a fallback from the static dataset.
-        source       = price_data.get("source", "dataset")
-        is_live      = "FRED" in source
-        source_color = "#4caf82" if is_live else "#8a8580"
-        source_label = "● live" if is_live else "● dataset fallback"
-
-        st.markdown(f"""
-        <div class='price-card'>
-            <div class='price-label'>Brent Crude — Latest</div>
-            <div class='price-value'>${price_data['price']}
-                <span class='price-unit'>/ barrel</span>
-            </div>
-            <div style='font-family:DM Mono,monospace; font-size:0.65rem;
-                        color:#8a8580; margin-top:0.3rem;'>
-                as of {price_data['date']}
-            </div>
-            <div style='font-family:DM Mono,monospace; font-size:0.6rem;
-                        color:{source_color}; margin-top:0.2rem;
-                        letter-spacing:1px;'>
-                {source_label}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        st.markdown("<div class='section-label'>Quick Scenarios</div>",
-                    unsafe_allow_html=True)
-        quick_scenario = st.selectbox(
-            "Pick a predefined scenario",
-            ["— Select —"] + [s["name"] for s in scenarios],
-            label_visibility="collapsed"
-        )
-        if quick_scenario != "— Select —":
-            st.session_state["prefill"] = quick_scenario
-
-        st.markdown("---")
-
-        forecast_weeks = st.slider(
-            "Forecast Horizon (weeks)",
-            min_value=4, max_value=24, value=12, step=4
-        )
-
-        st.markdown("---")
-
-        st.markdown("""
-        <div class='section-label'>Model Info</div>
-        <div style='font-family:DM Mono,monospace; font-size:0.7rem;
-                    color:#8a8580; line-height:1.8;'>
-            Model: SARIMAX(1,1,1)(1,0,1,52)<br>
-            Training: 2006 – 2022<br>
-            Test MAPE: 15.22%<br>
-            LLM: LLaMA 3.3 70B (Groq)<br>
-            Variables: 5 macro drivers
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Main Content ───────────────────────────────────────────────
-    st.markdown("""
-    <div class='main-header'>Crude Oil<br>Scenario Forecaster</div>
-    <div class='main-subheader'>
-        Macroeconomic Simulation · SARIMAX · LLaMA 3.3
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Query input ────────────────────────────────────────────────
-    prefill      = st.session_state.get("prefill", "")
-    default_text = prefill if prefill else \
-        "What happens to oil prices if OPEC cuts production by 10%?"
-
-    query = st.text_area(
-        "Enter your scenario in plain English",
-        value=default_text, height=90,
-        placeholder="e.g. What if Middle East tensions rise while demand also grows?",
-        label_visibility="collapsed"
+def render_forecast_tab(data):
+    st.plotly_chart(make_forecast_chart(data), width="stretch")
+    st.markdown(
+        "<div class='small-mono'>Grey bands: the model's own uncertainty around the no-shock baseline. "
+        "Dotted lines: each scenario. Amber: probability-weighted expectation. "
+        "The bands describe typical conditions and were too narrow in the 2022 crisis.</div>",
+        unsafe_allow_html=True,
     )
 
-    if "prefill" in st.session_state:
-        del st.session_state["prefill"]
 
-    col_btn, col_hint = st.columns([1, 3])
-    with col_btn:
-        run_clicked = st.button("▶  RUN SIMULATION", disabled=not api_online)
-    with col_hint:
+def render_scenarios_tab(data):
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown("<div class='section-label'>How the weights were set</div>", unsafe_allow_html=True)
+        st.plotly_chart(make_probability_chart(data), width="stretch")
+        dropped = data.get("dropped_scenarios") or {}
+        if dropped:
+            names = ", ".join(k.replace("_", " ") for k in dropped)
+            st.markdown(f"<div class='small-mono'>Dropped (under 5% weight, rest rescaled): {safe_text(names)}</div>",
+                        unsafe_allow_html=True)
+    with right:
+        st.markdown(f"<div class='section-label'>Week-{data['forecast_weeks']} price by scenario</div>",
+                    unsafe_allow_html=True)
+        for _, item in sorted(data["scenario_breakdown"].items(), key=lambda kv: -kv[1]["probability"]):
+            pct = item["probability"] * 100
+            price = item["week12_price"]
+            d = price - data["baseline_week12"]
+            color = GREEN if d >= 0 else RED
+            st.markdown(f"""
+            <div class='prob-row'>
+              <div class='prob-head'>
+                <span>{safe_text(short_name(item['name']))}</span>
+                <span style='color:{color};'>{money(price)} ({'+' if d >= 0 else '−'}{money(abs(d))})</span>
+              </div>
+              <div style='display:flex; align-items:center; gap:8px; margin-top:4px;'>
+                <div class='prob-bar-container'><div class='prob-bar-fill' style='width:{pct:.0f}%;'></div></div>
+                <span class='small-mono' style='min-width:34px;'>{pct:.0f}%</span>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+        notes = data.get("macro_adjustments") or {}
+        st.markdown("<div class='section-label'>Macro signals applied</div>", unsafe_allow_html=True)
+        if notes:
+            for note in notes.values():
+                st.markdown(f"<div class='info-row'><span>{safe_text(note)}</span></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='small-mono'>No macro signal was strong enough to shift the weights.</div>",
+                        unsafe_allow_html=True)
+
+
+def render_explanation_tab(data):
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown("<div class='section-label'>Analyst explanation</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='explanation-box'>{safe_text(data['explanation'])}</div>",
+                    unsafe_allow_html=True)
+        if data.get("reasoning"):
+            st.markdown(f"<div class='small-mono' style='margin-top:0.6rem;'>How the query was read: "
+                        f"{safe_text(data['reasoning'])}</div>", unsafe_allow_html=True)
+    with right:
+        st.markdown("<div class='section-label'>Uncertainty</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='note-box'>⚠️ {safe_text(data['uncertainty_note'])}</div>", unsafe_allow_html=True)
+        band = data.get("statistical_band")
+        if band:
+            st.markdown(f"<div class='note-box'>📏 {safe_text(band['note'])}</div>", unsafe_allow_html=True)
+
+
+def render_data_tab(data):
+    df = forecast_table(data)
+    money_cols = [c for c in df.columns if c != "Date"]
+    st.dataframe(
+        df.style.format("${:.2f}", subset=money_cols).map(
+            lambda v: f"color: {RED}" if v < 0 else f"color: {GREEN}", subset=["Expected − baseline"]
+        ),
+        width="stretch", height=min(80 + 35 * len(df), 480),
+    )
+    st.download_button(
+        "Download forecast (CSV)", df.to_csv().encode("utf-8"),
+        file_name=f"brent_scenarios_{datetime.now():%Y%m%d_%H%M}.csv", mime="text/csv",
+    )
+
+
+def render_results(data, query):
+    st.markdown(f"<div class='small-mono' style='margin-bottom:0.6rem;'>Results for: "
+                f"<span style='color:#f0ede8;'>“{safe_text(query)}”</span></div>", unsafe_allow_html=True)
+    render_summary(data)
+    st.markdown("<br>", unsafe_allow_html=True)
+    tab_fc, tab_sc, tab_ex, tab_data = st.tabs(["📈 Forecast", "🎯 Scenarios", "📝 Explanation", "🔢 Data"])
+    with tab_fc:
+        render_forecast_tab(data)
+    with tab_sc:
+        render_scenarios_tab(data)
+    with tab_ex:
+        render_explanation_tab(data)
+    with tab_data:
+        render_data_tab(data)
+
+
+# ── Sidebar ────────────────────────────────────────────────────────
+
+def render_sidebar(api_online, model_info, price_data, scenarios):
+    with st.sidebar:
         st.markdown("""
-        <div style='font-family:DM Mono,monospace; font-size:0.7rem;
-                    color:#8a8580; padding-top:0.6rem;'>
-            LLM assigns scenario probabilities · macro signals adjust them · SARIMAX runs each
+        <div style='font-family:DM Serif Display,serif; font-size:1.4rem; color:#f0ede8;'>🛢️ Oil Forecaster</div>
+        <div style='font-family:DM Mono,monospace; font-size:0.6rem; letter-spacing:2px; color:#e8a020;
+                    text-transform:uppercase; margin-bottom:1.2rem;'>Scenario Simulation System</div>
+        """, unsafe_allow_html=True)
+
+        color, label = (GREEN, "API ONLINE") if api_online else (RED, "API OFFLINE")
+        st.markdown(f"<div class='small-mono' style='color:{color}; letter-spacing:2px; margin-bottom:0.8rem;'>"
+                    f"● {label}</div>", unsafe_allow_html=True)
+        if not api_online:
+            st.warning("The API may be waking up (free hosting sleeps). Wait 30–60 seconds, then refresh.")
+            if st.button("Retry connection"):
+                get_api_status.clear()
+                st.rerun()
+
+        price = price_data.get("price")
+        # Exact match: the fallback label "dataset (FRED unavailable)" also contains "FRED".
+        is_live = price_data.get("source") == "FRED live"
+        price_html = f"${price:,.2f}" if isinstance(price, (int, float)) else "—"
+        st.markdown(f"""
+        <div class='price-card'>
+            <div class='price-label'>Brent crude — latest</div>
+            <div class='price-value'>{price_html}<span class='price-unit'>/ barrel</span></div>
+            <div class='small-mono'>as of {safe_text(price_data.get('date'))}</div>
+            <div class='small-mono' style='color:{GREEN if is_live else MUTED};'>
+                ● {'live (FRED)' if is_live else 'dataset fallback'}</div>
         </div>
         """, unsafe_allow_html=True)
 
+        st.markdown("<div class='section-label'>Quick scenarios</div>", unsafe_allow_html=True)
+        names = [s["name"] for s in scenarios]
+        choice = st.selectbox("Predefined scenario", ["— Select —"] + names, label_visibility="collapsed")
+        if choice != "— Select —":
+            st.button("Use this scenario", width="stretch", on_click=set_query,
+                      args=(f"What happens to oil prices under: {choice}?",))
+
+        st.markdown("<div class='section-label'>Horizon</div>", unsafe_allow_html=True)
+        weeks = st.select_slider("Forecast horizon (weeks)", options=HORIZONS, value=12,
+                                 label_visibility="collapsed")
+        st.caption("Capped at 12 weeks: the horizon the backtests validated.")
+
+        with st.expander("About the model", expanded=False):
+            rows = {
+                "Forecaster": model_info.get("forecaster", "SARIMAX(1,1,1)(1,0,1,52)"),
+                "LLM": model_info.get("llm", "—"),
+                "Data through": model_info.get("data_as_of", "—"),
+            }
+            for k, v in rows.items():
+                st.markdown(f"<div class='info-row'><span class='info-key'>{k}</span>"
+                            f"<span>{safe_text(v)}</span></div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-label' style='margin-top:0.8rem;'>Evaluation</div>",
+                        unsafe_allow_html=True)
+            for fact in EVALUATION_FACTS:
+                st.markdown(f"<div class='small-mono' style='margin-bottom:0.35rem;'>• {safe_text(fact)}</div>",
+                            unsafe_allow_html=True)
+    return weeks
+
+
+# ── Main ───────────────────────────────────────────────────────────
+
+def main():
+    api_online, model_info = get_api_status()
+    price_data = get_current_price() if api_online else {"price": None, "date": "N/A", "source": "unavailable"}
+    scenarios = get_scenarios() if api_online else []
+    weeks = render_sidebar(api_online, model_info, price_data, scenarios)
+
+    llm_label = model_info.get("llm", "gpt-oss-120b").split(" ")[0].split("/")[-1]
+    st.markdown(f"""
+    <div class='main-header'>Crude Oil Scenario Forecaster</div>
+    <div class='main-subheader'>Macroeconomic scenarios · SARIMAX · {safe_text(llm_label)}</div>
+    <div class='honesty-banner'>This is a <b>scenario analysis</b> tool, not a price predictor. In walk-forward
+    backtests (2022–2025) no model beat a simple “price stays the same” forecast. Use it to compare
+    <i>what-ifs</i>, and read the bands as typical-conditions ranges.</div>
+    """, unsafe_allow_html=True)
+
+    st.session_state.setdefault("query", EXAMPLE_QUERIES[0])
+    query = st.text_area("Describe a scenario in plain English", key="query", height=90,
+                         placeholder="e.g. What if Middle East tensions rise while demand also grows?")
+
+    st.markdown("<div class='small-mono' style='margin:-0.3rem 0 0.4rem 0;'>Try an example:</div>",
+                unsafe_allow_html=True)
+    for col, example in zip(st.columns(len(EXAMPLE_QUERIES)), EXAMPLE_QUERIES):
+        col.button(example, width="stretch", key=f"ex_{example}", on_click=set_query, args=(example,))
+
+    run_clicked = st.button("▶  Run simulation", type="primary", disabled=not api_online)
     st.markdown("---")
 
-    # ── Results ────────────────────────────────────────────────────
     if run_clicked:
         if not query.strip():
-            st.warning("Please enter a scenario query.")
-            return
+            st.warning("Please describe a scenario first.")
+        else:
+            with st.spinner("Weighting scenarios, applying macro signals and running SARIMAX..."):
+                data, error = run_probabilistic_simulation(query.strip(), weeks)
+            if error:
+                st.error(f"Simulation failed: {error}")
+            else:
+                # Keep results across reruns: Streamlit re-executes the script on every
+                # click (tabs, downloads, sidebar), which would otherwise clear them.
+                st.session_state["result"] = {"data": data, "query": query.strip(), "at": datetime.now()}
 
-        with st.spinner("⚙️  Running probabilistic simulation across multiple scenarios..."):
-            data, error = run_probabilistic_simulation(query, forecast_weeks)
-
-        if error:
-            st.error(f"Simulation failed: {error}")
-            return
-
-        render_probabilistic_results(data)
-
-        # Footer
-        st.markdown("---")
+    result = st.session_state.get("result")
+    if result:
+        render_results(result["data"], result["query"])
         st.markdown(f"""
-        <div style='font-family:DM Mono,monospace; font-size:0.65rem;
-                    color:#8a8580; text-align:center; padding:0.5rem;'>
-            Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} ·
-            SARIMAX(1,1,1)(1,0,1,52) · Probabilistic Mode ·
-            LLaMA 3.3 70B via Groq · Training data: 2006–2022 · MAPE: 15.22%
-        </div>
-        """, unsafe_allow_html=True)
-
+        <div class='small-mono' style='text-align:center; padding:1rem 0 0.5rem 0;'>
+            Generated {result['at']:%Y-%m-%d %H:%M} · {safe_text(model_info.get('forecaster', 'SARIMAX'))}
+            · {safe_text(model_info.get('llm', ''))} · data through {safe_text(model_info.get('data_as_of', '—'))}
+        </div>""", unsafe_allow_html=True)
     else:
-        # Empty state
         st.markdown("""
-        <div style='text-align:center; padding:3rem 0; color:#8a8580;'>
-            <div style='font-size:4rem; margin-bottom:0.8rem;'>🛢️</div>
-            <div style='font-family:DM Mono,monospace; font-size:0.75rem;
-                        letter-spacing:2px; text-transform:uppercase;
-                        margin-bottom:0.8rem;'>
-                Ready to simulate
+        <div style='text-align:center; padding:2.5rem 0; color:#8a8580;'>
+            <div style='font-size:3.2rem; margin-bottom:0.6rem;'>🛢️</div>
+            <div style='font-family:DM Mono,monospace; font-size:0.75rem; letter-spacing:2px;
+                        text-transform:uppercase; margin-bottom:0.6rem;'>Ready to simulate</div>
+            <div style='max-width:460px; margin:0 auto; line-height:1.7; font-size:0.9rem;'>
+                Describe an oil market event. The LLM spreads probability across five scenarios,
+                live macro signals adjust the weights, and SARIMAX projects each path with a
+                statistical band around the no-shock baseline.
             </div>
-            <div style='font-family:DM Sans,sans-serif; font-size:0.9rem;
-                        max-width:420px; margin:0 auto; line-height:1.7;'>
-                Type any oil market scenario in plain English.
-                The system assigns probabilities across multiple scenarios,
-                adjusts them with live macro signals, and returns an
-                expected price with a confidence range.
-            </div>
-            <div style='margin-top:1.5rem; font-family:DM Mono,monospace;
-                        font-size:0.7rem; color:#3a3a3a;'>
-                "What if OPEC cuts production?"<br>
-                "What if Russia-Ukraine war escalates?"<br>
-                "What if Middle East tensions rise AND demand grows?"<br>
-                "What happens if the Fed raises rates aggressively?"
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
