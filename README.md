@@ -284,13 +284,17 @@ crude-oil-forecaster/
 ├── data/
 │   ├── oil_macro_weekly.csv        # Weekly data (2006 – Jan 2026)
 │   ├── oil_macro_transformed.csv  # Stationary transformed features
-│   └── scenario_events.csv        # 31 dated historical events per scenario type
+│   ├── scenario_events.csv        # 31 dated historical events per scenario type
+│   ├── raw/                       # Raw source snapshots (the pipeline's source of truth)
+│   └── staging/                   # Freshly built candidate dataset (not committed)
 │
+├── pipeline/               # Fetch raw data, build + validate the dataset, diff reports
 ├── evaluation/             # Walk-forward backtest, challengers, conformal calibration
 ├── reports/
 │   ├── backtest/report.md     # Accuracy vs baselines, promotion decisions
 │   ├── calibration/report.md  # Interval coverage and calibration
-│   └── scenarios/report.md    # Scenario calibration on historical events
+│   ├── scenarios/report.md    # Scenario calibration on historical events
+│   └── data/                  # Reproduction check and data diff reports
 ├── tests/                  # pytest suite (API, engine, LLM, evaluation)
 │
 ├── requirements.txt        # Pinned dependencies (Python 3.11 stable)
@@ -399,6 +403,34 @@ python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
 
 ---
 
+## 🔁 Data Pipeline
+
+The dataset was originally built by hand in a Colab notebook. It is now rebuilt by a
+tested pipeline:
+
+```
+python -m pipeline.refresh --fetch     # download raw series, build, validate -> data/staging/
+python -m pipeline.compare data data/staging --out reports/data/staged_vs_current.md
+```
+
+- **Raw snapshots** (`data/raw/`) are the source of truth: builds read only these files, so
+  any dataset can be rebuilt offline exactly as it was.
+- **Validation** blocks structurally wrong or implausible data (gaps, missing values, unit
+  errors, inconsistent transforms) and flags unusual moves and stale data for review.
+- **Staging, not overwrite:** new data lands in `data/staging/` with a `manifest.json`
+  (sources, recipe, hashes, validation). Promoting it to `data/` is a separate decision,
+  because new data changes the model and every report.
+- **Reproducibility check:** rebuilding to 2025-12-31 matches the notebook's data exactly for
+  inventories, dollar, fed funds and VIX. The only differences are source revisions: recent
+  industrial production, and a few 2006 Brent days FRED no longer serves
+  ([`reports/data/reproduction.md`](reports/data/reproduction.md)).
+
+Recipes (`pipeline/build.py`): `v1-notebook` reproduces the original data, including its
+half-finished final week; `v1.1-complete-weeks` (default) keeps only weeks that have ended;
+`v2-release-aware` also moves monthly series to when they were actually published.
+
+---
+
 ## 📦 Data Sources
 
 | Variable | Source | Frequency | Description |
@@ -406,7 +438,7 @@ python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
 | Brent Crude Price | EIA / FRED | Weekly | USD per barrel |
 | US Dollar Index | FRED (DTWEXBGS) | Weekly | DXY trade-weighted index |
 | Industrial Production | FRED (INDPRO) | Monthly → Weekly | US manufacturing output |
-| Crude Inventories | EIA | Weekly | US commercial crude stocks |
+| Crude Inventories | EIA (WCRSTUS1) | Weekly | US crude ending stocks, including the SPR |
 | Federal Funds Rate | FRED (FEDFUNDS) | Monthly → Weekly | US benchmark interest rate |
 | VIX | FRED (VIXCLS) | Daily → Weekly | CBOE volatility / fear index |
 
