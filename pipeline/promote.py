@@ -134,7 +134,8 @@ def has_new_data(current_dir: Path, staging_dir: Path) -> bool:
 
 
 def run(current_dir: Path, staging_dir: Path, model_path: Path, registry_path: Path, report_path: Path,
-        apply: bool, overrides: list[str], reason: str | None, fit_fn=modeling.fit) -> int:
+        apply: bool, overrides: list[str], reason: str | None, fit_fn=modeling.fit,
+        serving_fn=modeling.serving_model) -> int:
     if not has_new_data(current_dir, staging_dir):
         # Re-promoting identical data would add a duplicate registry entry.
         print("Staged data is identical to the live data: nothing to promote.")
@@ -178,7 +179,9 @@ def run(current_dir: Path, staging_dir: Path, model_path: Path, registry_path: P
         print("All gates passed (dry run). Re-run with --apply to promote.")
         return 0
 
-    promote(staging_dir, current_dir, candidate, model_path, registry_path, manifest, gates, summary,
+    # Save the small serving copy (same forecasts), not the ~490 MB fit.
+    serving = serving_fn(candidate, new_w, new_t)
+    promote(staging_dir, current_dir, serving, model_path, registry_path, manifest, gates, summary,
             monitoring, reason)
     return 0
 
