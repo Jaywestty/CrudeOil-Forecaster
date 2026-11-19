@@ -50,7 +50,7 @@ def ensure_champion(model_path: Path = MODEL, data_dir: Path = DATA) -> None:
         return
     print("No current model file: training the champion from the live data for monitoring...", flush=True)
     weekly, transformed = promote.load_dataset_dir(data_dir)
-    fitted = modeling.fit(weekly, transformed)
+    fitted = modeling.serving_model(modeling.fit(weekly, transformed), weekly, transformed)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     with open(model_path, "wb") as f:
         pickle.dump(fitted, f)
