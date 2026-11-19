@@ -61,7 +61,7 @@ app = FastAPI(
     title="Oil Price Scenario Forecasting API",
     description="""
     A macroeconomic scenario simulation system for crude oil price forecasting.
-    Powered by SARIMAX econometric modeling and LLaMA 3.3 via Groq.
+    Powered by SARIMAX econometric modeling and gpt-oss-120b via Groq.
 
     ## Endpoints
     - **/simulate** — Original single-scenario simulation (deterministic)
@@ -72,10 +72,26 @@ app = FastAPI(
     1. LLM assigns probability weights across all relevant scenarios
     2. Live macro signals (VIX, dollar, inventories) adjust those weights
     3. SARIMAX runs separately for each scenario (no retraining)
-    4. Results combined into a weighted expected price + confidence range
+    4. Results combined into a weighted expected price + scenario spread,
+       plus the model's 80% / 95% statistical band around the no-shock baseline
     5. LLM explains in institutional research language
+
+    ## Evaluation
+    Walk-forward backtests (reports/backtest, reports/calibration) show no model,
+    including this one, beats a no-change forecast for weekly Brent prices in
+    2022–2025. Treat outputs as scenario analysis, not price prediction.
     """,
-    version="2.0.0"
+    version="2.1.0"
+)
+
+# Coverage of the statistical band, measured in the walk-forward backtests
+# (reports/backtest/report.md and reports/calibration/report.md).
+STATISTICAL_BAND_NOTE = (
+    "Statistical range around the no-shock baseline, from the model's own error model. "
+    "In walk-forward backtests over 2022–2025, the 95% band contained the actual price "
+    "about 85% of the time at 1 week, 92% at 4 weeks and 97% at 12 weeks. During the "
+    "2022 crisis, bands like this covered only about 71–85%. Read it as a range for "
+    "typical conditions, not a worst case."
 )
 
 # ── CORS ───────────────────────────────────────────────────────────
@@ -138,7 +154,22 @@ class ScenarioBreakdownItem(BaseModel):
     """One scenario's contribution inside a probabilistic result."""
     name:         str
     probability:  float
-    week12_price: float
+    week12_price: float          # price at the final forecast week (name kept for compatibility)
+    forecast:     list[float] = []  # full weekly path
+
+class Band(BaseModel):
+    lower: list[float]
+    upper: list[float]
+
+class StatisticalBand(BaseModel):
+    level_80: Band
+    level_95: Band
+    note:     str
+
+class ModelInfo(BaseModel):
+    forecaster: str
+    llm:        str
+    data_as_of: Optional[str] = None
 
 class ProbabilisticResponse(BaseModel):
     """Response model for /simulate-probabilistic."""
@@ -160,6 +191,25 @@ class ProbabilisticResponse(BaseModel):
     explanation:            str
     uncertainty_note:       str
     forecast_weeks:         int
+    # Added in v2.1 (all optional so older clients keep working)
+    final_probabilities:    dict = {}
+    dropped_scenarios:      dict = {}
+    forecast_dates:         Optional[list[str]] = None
+    statistical_band:       Optional[StatisticalBand] = None
+    model_info:             Optional[ModelInfo] = None
+
+
+def _model_info() -> ModelInfo:
+    origin = engine.forecast_origin
+    return ModelInfo(
+        forecaster="SARIMAX(1,1,1)(1,0,1,52) with 5 macro drivers",
+        llm=f"{explainer.model} (Groq)",
+        data_as_of=None if origin is None else str(origin.date()),
+    )
+
+
+def _round_list(values) -> list[float]:
+    return [round(float(v), 2) for v in values]
 
 
 # ── Endpoints ──────────────────────────────────────────────────────
@@ -168,9 +218,10 @@ class ProbabilisticResponse(BaseModel):
 def root():
     """Health check — confirms API is running."""
     return {
-        "status":  "online",
-        "message": "Oil Price Scenario Forecasting API v2.0",
-        "docs":    "/docs"
+        "status":     "online",
+        "message":    "Oil Price Scenario Forecasting API v2.1",
+        "docs":       "/docs",
+        "model_info": _model_info().model_dump(),
     }
 
 
@@ -381,10 +432,17 @@ def run_probabilistic_simulation(request: ScenarioRequest):
             key: ScenarioBreakdownItem(
                 name         = data["scenario_name"],
                 probability  = data["probability"],
-                week12_price = data["week12_price"]
+                week12_price = data["week12_price"],
+                forecast     = _round_list(data["forecast"]),
             )
             for key, data in result["scenario_results"].items()
         }
+        band80, band95 = result["baseline_band_80"], result["baseline_band_95"]
+        statistical_band = StatisticalBand(
+            level_80 = Band(lower=_round_list(band80["lower"]), upper=_round_list(band80["upper"])),
+            level_95 = Band(lower=_round_list(band95["lower"]), upper=_round_list(band95["upper"])),
+            note     = STATISTICAL_BAND_NOTE,
+        )
 
         # Primary driver display name
         primary_key  = result["primary_driver"]
@@ -406,13 +464,18 @@ def run_probabilistic_simulation(request: ScenarioRequest):
             scenario_context       = parsed.get("scenario_context", request.query),
             scenario_breakdown     = breakdown,
             original_probabilities = result["original_probabilities"],
-            adjusted_probabilities = result["scenario_probabilities"],
+            adjusted_probabilities = result["adjusted_probabilities"],
+            final_probabilities    = result["scenario_probabilities"],
+            dropped_scenarios      = result["dropped_scenarios"],
             macro_adjustments      = result["macro_adjustments"],
-            weighted_forecast      = result["weighted_forecast"].tolist(),
-            baseline_forecast      = result["baseline_forecast"].tolist(),
+            weighted_forecast      = _round_list(result["weighted_forecast"]),
+            baseline_forecast      = _round_list(result["baseline_forecast"]),
             explanation            = explanation,
             uncertainty_note       = uncertainty,
-            forecast_weeks         = weeks
+            forecast_weeks         = weeks,
+            forecast_dates         = result["forecast_dates"],
+            statistical_band       = statistical_band,
+            model_info             = _model_info(),
         )
 
     except ValueError as e:
