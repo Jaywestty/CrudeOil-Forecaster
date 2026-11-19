@@ -162,3 +162,70 @@ class TestParseQueryProbabilistic:
         result = explainer.parse_query_probabilistic("China demand surges")
 
         assert result["scenario_context"] == "China demand surges"
+
+class TestModelConfiguration:
+
+    def test_uses_gpt_oss_120b_with_reasoning_settings(self, make_explainer):
+        explainer, client = make_explainer('{"probabilities": {"opec_cut": 1.0}}')
+        explainer.parse_query_probabilistic("OPEC cuts output")
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "openai/gpt-oss-120b"
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["include_reasoning"] is False
+        # Reasoning tokens come out of the same budget, so the limit must leave room.
+        assert kwargs["max_completion_tokens"] >= 1024
+        assert "max_tokens" not in kwargs
+
+    def test_model_can_be_overridden_by_env(self, monkeypatch, make_explainer):
+        import importlib
+        import llm_explainer
+        monkeypatch.setenv("GROQ_MODEL", "some/other-model")
+        importlib.reload(llm_explainer)
+        try:
+            assert llm_explainer.LLM_MODEL == "some/other-model"
+        finally:
+            monkeypatch.delenv("GROQ_MODEL")
+            importlib.reload(llm_explainer)
+
+    def test_empty_answer_falls_back_instead_of_blank(self, make_explainer):
+        explainer, _ = make_explainer("")
+        parsed = explainer.parse_query_probabilistic("anything")
+        assert sum(parsed["probabilities"].values()) == pytest.approx(1.0)
+        note = explainer.generate_uncertainty_note({
+            "impact_week12": {"formatted": "+$1.00"}, "scenario_name": "x",
+            "baseline_forecast": None, "weeks": 12,
+        })
+        assert note.strip()
+
+
+class TestApiFailures:
+
+    def test_api_error_during_parsing_falls_back_instead_of_crashing(self, make_explainer):
+        import groq
+        explainer, client = make_explainer("unused")
+        client.chat.completions.create.side_effect = groq.GroqError("Invalid API Key")
+        prob = explainer.parse_query_probabilistic("OPEC cuts output")
+        single = explainer.parse_user_query("OPEC cuts output")
+        assert sum(prob["probabilities"].values()) == pytest.approx(1.0)
+        assert single["scenario_key"] in llm_explainer_keys()
+
+
+def llm_explainer_keys():
+    import llm_explainer
+    return set(llm_explainer.AVAILABLE_SCENARIOS)
+
+
+def test_explanation_failure_hides_raw_error(make_explainer):
+    import groq
+    import llm_explainer
+    explainer, client = make_explainer("unused")
+    client.chat.completions.create.side_effect = groq.GroqError("Error code: 401 - Invalid API Key")
+    result = {
+        "primary_driver": "opec_cut", "scenario_probabilities": {"opec_cut": 1.0},
+        "scenario_names": {"opec_cut": "OPEC cut"}, "scenario_week12": {"opec_cut": 65.0},
+        "forecast_weeks": 12, "current_price": 61.35, "baseline_week12": 60.6,
+        "price_expected": 65.0, "price_low": 65.0, "price_high": 65.0, "macro_adjustments": {},
+    }
+    text = explainer.explain_probabilistic_results(result, {"scenario_context": "OPEC cut"})
+    assert text == llm_explainer.EXPLANATION_FALLBACK
+    assert "401" not in text
