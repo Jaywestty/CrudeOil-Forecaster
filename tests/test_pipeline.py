@@ -155,8 +155,18 @@ def test_transformed_values():
 
 @pytest.fixture
 def committed():
+    """The live dataset (whatever was last promoted)."""
     w = pd.read_csv("data/oil_macro_weekly.csv", index_col=0, parse_dates=True)
     t = pd.read_csv("data/oil_macro_transformed.csv", index_col=0, parse_dates=True)
+    return w, t
+
+
+@pytest.fixture
+def notebook_dataset():
+    """The original Colab-built dataset, frozen as a reproducibility reference."""
+    base = "tests/fixtures/notebook_dataset/"
+    w = pd.read_csv(base + "oil_macro_weekly.csv", index_col=0, parse_dates=True)
+    t = pd.read_csv(base + "oil_macro_transformed.csv", index_col=0, parse_dates=True)
     return w, t
 
 
@@ -181,16 +191,16 @@ def test_validation_catches_gaps_nans_bounds_and_inconsistency(committed):
 
 
 def test_staleness_is_a_warning_not_an_error(committed):
-    rep = validate(*committed, as_of=pd.Timestamp("2026-11-18"))
+    rep = validate(*committed, as_of=committed[0].index[-1] + pd.Timedelta(days=60))
     assert rep.ok and any("days old" in w for w in rep.warnings)
 
 
 # ── Reproducibility against the committed dataset ──────────────────
 
 
-def test_raw_snapshots_reproduce_the_committed_dataset(committed):
+def test_raw_snapshots_reproduce_the_notebook_dataset(notebook_dataset):
     """Columns without source revisions must match the notebook-built data exactly."""
-    w, _ = committed
+    w, _ = notebook_dataset
     rebuilt = build.build_weekly(sources.load_snapshots(), end="2025-12-31", recipe=build.RECIPE_V1)
     assert rebuilt.index.equals(w.index)
     for col in ("inventories", "dollar_index", "fed_funds", "vix"):
