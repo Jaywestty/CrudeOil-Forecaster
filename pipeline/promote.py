@@ -127,8 +127,18 @@ def monitor_champion(champion, weekly: pd.DataFrame, transformed: pd.DataFrame, 
             "mae_vs_naive": round(mae_m / mae_n, 3) if mae_n else None}
 
 
+def has_new_data(current_dir: Path, staging_dir: Path) -> bool:
+    """True if the staged datasets differ from the live ones (by content)."""
+    return any(content_hash(current_dir / name) != content_hash(staging_dir / name)
+               for name in (WEEKLY, TRANSFORMED))
+
+
 def run(current_dir: Path, staging_dir: Path, model_path: Path, registry_path: Path, report_path: Path,
         apply: bool, overrides: list[str], reason: str | None, fit_fn=modeling.fit) -> int:
+    if not has_new_data(current_dir, staging_dir):
+        # Re-promoting identical data would add a duplicate registry entry.
+        print("Staged data is identical to the live data: nothing to promote.")
+        return 0
     manifest = json.loads((staging_dir / MANIFEST).read_text(encoding="utf-8"))
     cur_w, _ = load_dataset_dir(current_dir)
     new_w, new_t = load_dataset_dir(staging_dir)
