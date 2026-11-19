@@ -336,6 +336,38 @@ def make_forecast_chart(data):
     return _base_layout(fig, x_title, 430)
 
 
+def make_history_chart(history, names):
+    """One dot per past event (hollow = overlapped a bigger shock), diamond = median."""
+    fig = go.Figure()
+    fig.add_vline(x=0, line_color=LINE, line_width=1)
+    for i, (key, ctx) in enumerate(history.items()):
+        label = names.get(key, key)
+        color = SCENARIO_PALETTE[i % len(SCENARIO_PALETTE)]
+        events = ctx["events"]
+        fig.add_trace(go.Scatter(
+            x=[e["move_pct"] for e in events], y=[label] * len(events), mode="markers",
+            name=label, showlegend=False,
+            marker=dict(size=11, color=[("rgba(0,0,0,0)" if e["confounded"] else color) for e in events],
+                        line=dict(color=color, width=1.5)),
+            customdata=[[e["date"], e["event"]] for e in events],
+            hovertemplate="%{customdata[1]}<br>%{customdata[0]}: %{x:+.1f}%<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=[ctx["median_pct"]], y=[label], mode="markers", showlegend=False,
+            marker=dict(symbol="diamond", size=14, color=AMBER, line=dict(color="#0d0d0d", width=1)),
+            hovertemplate=f"Median: %{{x:+.1f}}% ({ctx['n_events']} events)<extra></extra>",
+        ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="DM Mono, monospace", color=MUTED, size=10),
+        xaxis=dict(title="Brent move after the event (%)", gridcolor=GRID, linecolor=LINE, ticksuffix="%",
+                   zeroline=False),
+        yaxis=dict(gridcolor=GRID, linecolor=LINE),
+        margin=dict(l=10, r=10, t=10, b=10), height=90 + 60 * max(len(history), 1),
+    )
+    return fig
+
+
 def make_probability_chart(data):
     """LLM estimate → after macro adjustment → final weights, per scenario."""
     names = {k: short_name(v["name"]) for k, v in data["scenario_breakdown"].items()}
@@ -361,10 +393,10 @@ def make_probability_chart(data):
     fig.update_layout(
         barmode="group", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="DM Mono, monospace", color=MUTED, size=10),
-        legend=dict(font=dict(size=9, color=MUTED), orientation="h", y=1.08, x=0),
+        legend=dict(font=dict(size=9, color=MUTED), orientation="h", yanchor="bottom", y=1.02, x=0),
         xaxis=dict(title="Probability (%)", gridcolor=GRID, linecolor=LINE, ticksuffix="%"),
         yaxis=dict(gridcolor=GRID, linecolor=LINE, autorange="reversed"),
-        margin=dict(l=10, r=10, t=30, b=10), height=80 + 55 * max(len(keys), 1),
+        margin=dict(l=10, r=10, t=40, b=10), height=130 + 55 * max(len(keys), 1),
     )
     return fig
 
@@ -447,6 +479,32 @@ def render_scenarios_tab(data):
         else:
             st.markdown("<div class='small-mono'>No macro signal was strong enough to shift the weights.</div>",
                         unsafe_allow_html=True)
+
+    render_history_section(data)
+
+
+def render_history_section(data):
+    """What Brent did after past events of each scenario type (descriptive only)."""
+    history = data.get("historical_context") or {}
+    if not history:
+        return
+    names = {k: short_name(v["name"]) for k, v in data["scenario_breakdown"].items()}
+    week = next(iter(history.values()))["week"]
+    st.markdown(f"<div class='section-label' style='margin-top:1.2rem;'>What happened after similar events "
+                f"(week {week})</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='note-box'>📚 {safe_text(data.get('historical_note', ''))}</div>",
+                unsafe_allow_html=True)
+    st.plotly_chart(make_history_chart(history, names), width="stretch")
+    for key, ctx in history.items():
+        label = (f"{names.get(key, key)}: {ctx['n_events']} events, {ctx['low_pct']:+.1f}% to "
+                 f"{ctx['high_pct']:+.1f}% (median {ctx['median_pct']:+.1f}%) · today's price → "
+                 f"${ctx['price_low']:,.2f} to ${ctx['price_high']:,.2f}")
+        with st.expander(label.replace("$", "\\$")):
+            rows = pd.DataFrame(ctx["events"]).rename(columns={
+                "date": "Date", "event": "Event", "move_pct": f"Move by week {ctx['week']} (%)",
+                "confounded": "Overlaps a bigger shock"})
+            rows["Overlaps a bigger shock"] = rows["Overlaps a bigger shock"].map({True: "yes", False: ""})
+            st.dataframe(rows, hide_index=True, width="stretch")
 
 
 def render_explanation_tab(data):
