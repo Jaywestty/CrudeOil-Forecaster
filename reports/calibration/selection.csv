@@ -1,0 +1,7 @@
+horizon,level,model,method,coverage,mean_width,interval_score,n_calibrated,basis
+1,0.8,Naive,adaptive conformal (ACI),0.8383838383838383,10.78744276755743,15.035883509574644,7,"calibrated, lowest interval score"
+1,0.95,SARIMA (no exog),adaptive conformal (ACI),0.9696969696969697,23.5049456657633,25.319006789344257,6,"calibrated, lowest interval score"
+4,0.8,Naive,native (model's own),0.7878787878787878,18.04924460631802,27.684662490073734,6,"calibrated, lowest interval score"
+4,0.95,Naive,native (model's own),0.9292929292929293,27.60393754542684,41.327257444640495,5,"calibrated, lowest interval score"
+12,0.8,Naive,native (model's own),0.8686868686868687,31.262208696381325,39.850798794199875,5,"calibrated, lowest interval score"
+12,0.95,SARIMA (no exog),native (model's own),0.9696969696969697,53.208166697041975,59.80679214287669,3,"calibrated, lowest interval score"
