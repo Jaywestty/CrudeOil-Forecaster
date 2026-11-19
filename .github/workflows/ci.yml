@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (API, engine, evaluation, pipeline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version   # same Python as the Render deployment
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  ui-smoke:
+    name: Streamlit UI smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: streamlit_ui/requirements.txt
+
+      - name: Install UI dependencies (isolated from the API's)
+        run: pip install -r streamlit_ui/requirements.txt
+
+      - name: Check dependencies resolve and the app compiles
+        # Catches version conflicts like pyarrow requiring a newer NumPy than
+        # pandas allows, which only failed at runtime when a table rendered.
+        run: |
+          pip check
+          python -m py_compile streamlit_ui/app_ui.py
+          python -c "import pandas, pyarrow, streamlit, plotly; pyarrow.Table.from_pandas(pandas.DataFrame({'a': [1.0]})); print('UI imports OK')"
