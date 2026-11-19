@@ -143,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.perf_counter()
 
     y, X = load_dataset()
+    fingerprint = data_fingerprint()  # at load time: files may change during a run
     eval_start = y.index[train_size(len(y)) - 1]  # same first scored origin as step 1a
     first = int(y.index.searchsorted(pd.Timestamp(args.burn_in_start)))
     cfg = BacktestConfig(first_origin=first, horizon=12, step=1, refit_every=52)
@@ -176,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         "window": args.window,
         "min_calib": args.min_calib,
         "gamma": args.gamma,
-        "data_fingerprint": json.dumps(data_fingerprint()),
+        "data_fingerprint": json.dumps(fingerprint),
         "git_commit": _git_commit(),
         "runtime_seconds": round(time.perf_counter() - t0, 1),
     }
