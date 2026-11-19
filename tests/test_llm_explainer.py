@@ -229,3 +229,20 @@ def test_explanation_failure_hides_raw_error(make_explainer):
     text = explainer.explain_probabilistic_results(result, {"scenario_context": "OPEC cut"})
     assert text == llm_explainer.EXPLANATION_FALLBACK
     assert "401" not in text
+
+
+def test_explanation_prompt_includes_history_as_context(make_explainer):
+    explainer, client = make_explainer("An explanation.")
+    result = {
+        "primary_driver": "opec_cut", "scenario_probabilities": {"opec_cut": 1.0},
+        "scenario_names": {"opec_cut": "OPEC cut"}, "scenario_week12": {"opec_cut": 65.0},
+        "forecast_weeks": 12, "current_price": 61.35, "baseline_week12": 60.6,
+        "price_expected": 65.0, "price_low": 65.0, "price_high": 65.0, "macro_adjustments": {},
+        "historical_context": {"opec_cut": {"n_events": 8, "week": 12, "low_pct": -35.9,
+                                            "high_pct": 68.4, "median_pct": 8.3}},
+    }
+    explainer.explain_probabilistic_results(result, {"scenario_context": "OPEC cut"})
+    messages = client.chat.completions.create.call_args.kwargs["messages"]
+    user_text = messages[1]["content"]
+    assert "after 8 past events" in user_text and "-35.9% to +68.4%" in user_text
+    assert "NOT A FORECAST" in messages[0]["content"]
