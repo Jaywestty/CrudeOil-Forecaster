@@ -20,11 +20,10 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import RidgeCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
+from scipy.stats import norm
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from evaluation.features import WARMUP, build_features, direct_target, training_rows
-
-Z_95 = 1.959963984540054
 
 
 @dataclass(frozen=True)
@@ -37,11 +36,16 @@ class ForecastContext:
     X_future: np.ndarray | None = None  # oracle forecasters only
 
 
+INTERVAL_LEVELS = (0.5, 0.8, 0.95)
+
+
 @dataclass(frozen=True)
 class Forecast:
     mean: np.ndarray
     lower: np.ndarray | None = None  # 95% interval
     upper: np.ndarray | None = None
+    # Optional extra central intervals, keyed by coverage level, e.g. {0.8: (lo, hi)}
+    intervals: dict[float, tuple[np.ndarray, np.ndarray]] | None = None
 
 
 class Forecaster(ABC):
@@ -72,8 +76,13 @@ class Naive(Forecaster):
         last = ctx.y_hist[-1]
         mean = np.full(ctx.horizon, last)
         sigma = np.std(np.diff(ctx.y_hist), ddof=1)
-        half = Z_95 * sigma * np.sqrt(np.arange(1, ctx.horizon + 1))
-        return Forecast(mean, mean - half, mean + half)
+        root_h = np.sqrt(np.arange(1, ctx.horizon + 1))
+        intervals = {}
+        for level in INTERVAL_LEVELS:
+            half = norm.ppf(0.5 + level / 2) * sigma * root_h
+            intervals[level] = (mean - half, mean + half)
+        lo95, hi95 = intervals[0.95]
+        return Forecast(mean, lo95, hi95, intervals)
 
 
 class SeasonalNaive(Forecaster):
@@ -213,8 +222,12 @@ class SarimaxForecaster(Forecaster):
     def forecast(self, ctx: ForecastContext) -> Forecast:
         result = self.estimator.filtered(ctx.y_hist, ctx.X_hist)
         fc = result.get_forecast(ctx.horizon, exog=self._future_exog(ctx))
-        ci = np.asarray(fc.conf_int(alpha=0.05))
-        return Forecast(np.asarray(fc.predicted_mean), ci[:, 0], ci[:, 1])
+        intervals = {}
+        for level in INTERVAL_LEVELS:
+            ci = np.asarray(fc.conf_int(alpha=1 - level))
+            intervals[level] = (ci[:, 0], ci[:, 1])
+        lo95, hi95 = intervals[0.95]
+        return Forecast(np.asarray(fc.predicted_mean), lo95, hi95, intervals)
 
 
 # ── Direct multi-horizon ML challengers ─────────────────────────────────────
