@@ -7,8 +7,8 @@ Usage:
     python -m pipeline.refresh --recipe v2-release-aware
 
 Recipes (pipeline/build.py): v1-notebook reproduces the original data exactly;
-v1.1-complete-weeks (default) also drops a partial final week; v2-release-aware
-also shifts monthly series to their publication dates.
+v1.1-complete-weeks also drops a partial final week; v2-release-aware (the
+production default) also shifts monthly series to their publication dates.
 
 Output goes to data/staging/ by default, never straight over the files the
 model is trained on. Promoting a staged dataset is a separate, deliberate
@@ -20,13 +20,13 @@ file hashes and validation results for every build.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
+from evaluation.data import content_hash
 from pipeline import build, sources
 from pipeline.validate import validate
 
@@ -35,7 +35,7 @@ RECIPES = build.RECIPES
 
 
 def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    return content_hash(path)  # line-ending independent
 
 
 def run(end: str | None, recipe_name: str, out: Path, raw_dir: Path, fetch: bool, as_of: pd.Timestamp) -> int:
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fetch", action="store_true", help="download fresh raw snapshots first")
     ap.add_argument("--end", help="use observations up to this date (default: today)")
-    ap.add_argument("--recipe", choices=sorted(RECIPES), default=build.RECIPE_V1_1.name)
+    ap.add_argument("--recipe", choices=sorted(RECIPES), default=build.PRODUCTION_RECIPE.name)
     ap.add_argument("--out", type=Path, default=ROOT / "data" / "staging")
     ap.add_argument("--raw-dir", type=Path, default=sources.RAW_DIR)
     args = ap.parse_args(argv)
