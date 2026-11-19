@@ -461,6 +461,24 @@ $8.29 for no-change: no edge, as the backtests predicted.
 
 ---
 
+### Automation (GitHub Actions)
+
+| Workflow | When | What it does |
+|---|---|---|
+| `ci.yml` | Every push and pull request | Runs the full test suite on the deployment's Python version, and checks the Streamlit UI's dependencies resolve and the app compiles |
+| `data-refresh.yml` | Thursdays 14:00 UTC, or on demand | Runs `python -m pipeline.weekly`: fetch, validate, diff, gate, promote. If new data passes the gate, it opens a pull request with the data, registry entry and reports |
+
+The refresh never pushes to `main`: a person reviews and merges its pull request, and the
+merge triggers the Render redeploy (which retrains the model on the promoted data). A failed
+validation or gate fails the run, so GitHub notifies the repository owner, and the reports are
+attached to the run. Gate overrides are never automatic.
+
+One-time setup: in the repository's Settings → Actions → General, allow GitHub Actions to
+create pull requests. Optionally add an `EIA_API_KEY` secret (the public `DEMO_KEY` is used
+otherwise).
+
+---
+
 ## 📦 Data Sources
 
 | Variable | Source | Frequency | Description |
@@ -735,7 +753,7 @@ Current limitations:
   - No model beats a no-change forecast for weekly prices (see Model Evaluation)
   - Macro relationships learned before 2022 largely broke afterwards
   - Statistical bands are too narrow during crises
-  - Data refreshes are run by hand (fetch, review, promote); automation is the next step
+  - Data refreshes are automated weekly but still merged by a person (by design)
   - 12-week forecast horizon — the range the backtests validated
   - Five fixed scenarios — cannot model novel events without mapping
     to one of the five (e.g. carbon taxes, SPR releases)
