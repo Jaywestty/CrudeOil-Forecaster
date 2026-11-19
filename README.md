@@ -1,780 +1,373 @@
-# 🛢️ Crude Oil Price Scenario Forecaster
+# 🛢️ Crude Oil Scenario Forecaster
 
-> **Probabilistic macroeconomic simulation engine for Brent crude oil pricing — powered by SARIMAX econometrics, gpt-oss-120b, and live macro signal adjustment.**
+**Ask a "what if" question about the oil market in plain English. Get a probability-weighted
+Brent price outlook, an honest uncertainty range, and what actually happened after similar
+events in the past.**
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)](https://crude-forecaster.streamlit.app/)
-[![API Docs](https://img.shields.io/badge/API%20Docs-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://crudeoil-forecaster.onrender.com/docs)
+[![Live demo](https://img.shields.io/badge/Live%20demo-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)](https://crude-forecaster.streamlit.app/)
+[![API docs](https://img.shields.io/badge/API%20docs-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://crudeoil-forecaster.onrender.com/docs)
+[![CI](https://github.com/Jaywestty/CrudeOil-Forecaster/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaywestty/CrudeOil-Forecaster/actions/workflows/ci.yml)
 
----
+![The app answering "What if OPEC cuts production by 10%?": expected price, scenario spread, statistical band and a dated forecast chart](docs/images/app-forecast.jpg)
 
-## 🌐 Live Deployments
-
-| Service | URL | Description |
-|---|---|---|
-| 🖥️ Frontend (Streamlit) | [crude-forecaster.streamlit.app](https://crude-forecaster.streamlit.app/) | Interactive probabilistic simulation UI |
-| ⚙️ Backend (FastAPI) | [crudeoil-forecaster.onrender.com](https://crudeoil-forecaster.onrender.com/) | REST API + auto-generated docs at `/docs` |
-
-> ⚠️ **Cold start notice:** The API runs on Render's free tier and spins down after 15 minutes of inactivity. The first request after a period of sleep takes **30–60 seconds** to wake up — this is expected.
+> The live API runs on Render's free tier: the first request after 15 idle minutes takes
+> 30–60 seconds while it wakes up.
 
 ---
 
-## 📌 What This Project Does
+## Contents
 
-This system answers oil market scenario questions in plain English and returns a **probability-weighted price distribution** — not a single deterministic answer.
-
-Instead of saying:
-> *"Oil will rise by $4 under this scenario"*
-
-It says:
-> *"Expected price: $87. Range: $80–$93. Primary driver: Geopolitical Tension (55% weight), adjusted by current VIX and inventory signals."*
-
-That difference is how professional energy trading desks actually think.
-
-**Example queries the system handles:**
-
-- *"What happens if OPEC cuts production by 10%?"*
-- *"If Russia-Ukraine tensions escalate, what is the price range?"*
-- *"What if global economic slowdown coincides with OPEC cuts?"*
-- *"How does a strong US dollar affect crude oil prices?"*
-- *"What is the expected price range for next quarter?"*
+- [In one minute](#in-one-minute) — for everyone
+- [Highlights](#highlights) — what was built and what it demonstrates
+- [What the evaluation found](#what-the-evaluation-found)
+- [How it works](#how-it-works)
+- [For ML engineers: methodology](#for-ml-engineers-methodology)
+- [Data pipeline and MLOps](#data-pipeline-and-mlops)
+- [Run it yourself](#run-it-yourself) · [API](#api) · [Project structure](#project-structure)
+- [Design decisions and trade-offs](#design-decisions-and-trade-offs) · [Limitations](#limitations-and-next-steps)
 
 ---
 
-## 🏗️ System Architecture
+## In one minute
 
-```
-User types scenario query (plain English)
-              │
-              ▼
-     ┌─────────────────┐
-     │  Streamlit UI   │  ← crude-forecaster.streamlit.app
-     └────────┬────────┘
-              │  POST /simulate-probabilistic
-              ▼
-     ┌─────────────────┐
-     │   FastAPI API   │  ← crudeoil-forecaster.onrender.com
-     └────────┬────────┘
-              │
-    ┌─────────┴──────────┐
-    ▼                    ▼
-┌──────────────┐   ┌──────────────┐
-│ gpt-oss-120b │   │   SARIMAX    │
-│ (Groq)       │   │   Model      │
-│              │   │   (.pkl)     │
-│ Assigns      │   │              │
-│ probability  │   │ Runs once    │
-│ weights to   │   │ per scenario │
-│ scenarios    │   │ (no retrain) │
-└──────┬───────┘   └──────┬───────┘
-       │                  │
-       ▼                  ▼
-┌─────────────────────────────────┐
-│   Macro Signal Adjustment Layer │
-│                                 │
-│  Live VIX, dollar, inventory    │
-│  signals shift LLM probabilities│
-│  based on current market state  │
-└─────────────────────┬───────────┘
-                      │
-                      ▼
-        Weighted forecast distribution
-        Expected price + range
-        Scenario breakdown + explanation
-              │
-              ▼
-     ┌─────────────────┐
-     │  Streamlit UI   │
-     │  renders result │
-     └─────────────────┘
-```
+**What it does.** You type a question such as *"What if Middle East tensions rise while
+demand also grows?"*. The app:
+
+1. uses a language model to decide how much each of five standard scenarios (OPEC cut,
+   geopolitical tension, demand boom, recession, Fed rate hike) applies to your question;
+2. adjusts those weights using current market signals (volatility, the dollar, inventories);
+3. projects Brent crude 4–12 weeks ahead under each scenario and combines them;
+4. shows a statistical range, what happened after comparable real events, and a written
+   explanation.
+
+**What it is not.** It is not a price predictor. The project tested that question properly:
+across four years of weekly forecasts made the way they would have been made in real time,
+no model, including this one, beat simply assuming *"the price stays where it is."* Oil
+prices a few weeks out are close to unpredictable from public data, which matches the
+research literature.
+
+**Why it's still useful.** It is a **scenario tool**: it compares *what-ifs* against a
+no-shock baseline, says how wide the uncertainty really is, and shows the range of what
+happened historically after similar events, clearly labelled as history rather than a forecast.
+
+<details>
+<summary><b>Key terms in plain English</b></summary>
+
+| Term | Meaning |
+|---|---|
+| **Backtest** | Replaying history: make a forecast using only what was known on a past date, then check it against what happened. |
+| **Naive / no-change forecast** | "Next week's price equals today's." The simplest benchmark, and a hard one to beat for market prices. |
+| **Leakage** | Accidentally letting a model see information it would not have had at the time. It makes results look better than they are. |
+| **Calibration** | Whether a "95% range" really contains the outcome about 95% of the time. |
+| **Scenario spread vs statistical band** | The spread is how far apart the what-ifs land. The band is the model's own uncertainty around the no-shock path. |
+
+</details>
 
 ---
 
-## 🧠 The Probabilistic Engine — How It Works
+## Highlights
 
-This is the core upgrade that separates the system from a standard single-scenario simulator.
+**What this project demonstrates** (each item links to code or a generated report):
 
-### Step 1 — LLM Probability Assignment
+- **Honest evaluation.** A walk-forward backtest over 198 weekly forecast dates with leakage
+  guards proven by tests, baselines, Diebold–Mariano significance tests and Holm correction
+  for multiple comparisons ([report](reports/backtest/report.md)).
+- **Rules fixed before results.** Every experiment states its decision rule before running,
+  and the rule is followed even when the result is disappointing.
+- **Uncertainty that is checked, not assumed.** Interval coverage measured by regime, plus
+  split, adaptive and volatility-scaled conformal prediction ([report](reports/calibration/report.md)).
+- **An event study.** 31 dated historical events used to test whether "what happened last
+  time" forecasts the next time ([report](reports/scenarios/report.md)).
+- **A reproducible data pipeline.** Raw-data snapshots, pure build functions, validation, a
+  promotion gate with recorded human overrides, and a model registry with lineage and
+  rollback ([pipeline/](pipeline)).
+- **Automation with a human in the loop.** CI on every push, and a weekly job that fetches
+  new data, runs the gate and opens a pull request for review ([workflows](.github/workflows)).
+- **A production LLM integration.** `gpt-oss-120b` on Groq, with token budgeting for a
+  reasoning model, graceful fallbacks, and guardrails so the model presents history as
+  history.
+- **Debugging in production.** A 488 MB model file crashed the 512 MB server. Keeping only
+  the model's final state cut it to 2.8 MB with identical forecasts.
+- **140 automated tests** covering the API, engine, LLM layer, evaluation and pipeline.
 
-Instead of picking one best-fit scenario, gpt-oss-120b reads the query and distributes probability weights across all relevant scenarios:
-
-```
-Query: "What if Middle East tensions rise while demand also grows?"
-
-LLM returns:
-  {
-    "geopolitical_tension": 0.55,
-    "demand_boom":          0.30,
-    "opec_cut":             0.15
-  }
-```
-
-### Step 2 — Macro Signal Adjustment
-
-The LLM estimates are then adjusted using **live macroeconomic signals** pulled from the dataset — real data, not guesses:
-
-```
-Current conditions read from dataset:
-  VIX level, dollar direction, inventory trend, Fed funds
-
-Adjustment rules:
-  VIX > 25      → boost geopolitical + recession weight
-  VIX < 15      → boost demand boom weight
-  Dollar rising → boost rate hike + recession weight
-  Dollar falling → boost demand boom + OPEC cut weight
-  Inventories ↓  → boost OPEC cut + geopolitical weight
-  Inventories ↑  → boost recession weight
-
-After adjustment, weights are renormalised to sum to 1.0
-```
-
-### Step 3 — SARIMAX Runs Per Scenario
-
-The SARIMAX model runs **once per scenario** — same trained model, different exogenous inputs each time. No retraining required:
-
-```
-Scenario A (geopolitical, 55%) → SARIMAX → Week-12 price: $91
-Scenario B (demand boom, 30%)  → SARIMAX → Week-12 price: $88
-Scenario C (opec cut, 15%)     → SARIMAX → Week-12 price: $89
-```
-
-### Step 4 — Weighted Expected Price
-
-```
-Expected price = (0.55 × $91) + (0.30 × $88) + (0.15 × $89)
-               = $90.00
-
-Range: $88 – $91
-Primary driver: Geopolitical Tension (55%)
-```
-
-### Step 5 — Direction Correction
-
-The SARIMAX model was trained on 2006–2022 data, a period where high-VIX episodes coincided with demand collapses (2008 crash, 2014–2016 glut). This means the model sometimes produces counterintuitive price directions for supply shock scenarios.
-
-A post-processing direction correction is applied after each scenario run:
-
-```python
-BULLISH_SCENARIOS = {"opec_cut", "geopolitical_tension", "demand_boom"}
-BEARISH_SCENARIOS = {"global_recession", "rate_hike"}
-
-# If a bullish scenario produced a price DROP, mirror it:
-# corrected = 2 × baseline - shocked
-# This preserves the model's magnitude estimate
-# while enforcing the correct economic direction.
-```
-
-### Step 6 — LLM Explanation
-
-gpt-oss-120b reads the actual model numbers and generates an institutional-style explanation covering the expected price, what drives the low vs high end of the range, and how macro signals shifted the probability weights.
+**Tech stack:** Python 3.11 · statsmodels (SARIMAX) · scikit-learn · pandas · FastAPI ·
+Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · GitHub Actions · Render.
 
 ---
 
-## 🧮 Why SARIMAX? (Modeling Decision)
+## What the evaluation found
 
-| Model | Strength | Why Not Used |
-|---|---|---|
-| **SARIMA** | Clean time series structure | No external variable support — cannot inject macro shocks |
-| **XGBoost** | Powerful pattern recognition | Treats observations as independent, no temporal structure, no counterfactual mechanism |
-| **Prophet** | Calendar seasonality | Built for daily business metrics, weak exogenous support, no economic interpretability |
-| ✅ **SARIMAX** | Time structure + external variables + interpretable coefficients | **Chosen** |
+| Question | Finding |
+|---|---|
+| Does the forecasting model beat "no change"? | **No.** In the 2022–25 test, at 1, 4 and 12 weeks its error is 1–5% *higher* than the naive forecast (the gap is not statistically significant). |
+| Do stronger models help? | **No.** A regularised linear model and gradient-boosted trees also failed to beat it. The more flexible the model, the worse it did. |
+| Why don't the macro variables help? | The dollar–oil weekly correlation fell from **−0.39** (2006–21) to **−0.06** (2022–25). The relationship the model learned broke. |
+| Was the original accuracy claim right? | **No.** The original 15.22% error came from one forecast that was given the *actual future* macro data. A flat line scored 12.39% on the same weeks. |
+| Are the uncertainty ranges trustworthy? | **On average, yes** (95% bands covered ~85% at 1 week, ~92% at 4, ~97% at 12). **In the 2022 crisis, no** (~71–85%). |
+| Does history predict what happens after an event? | **No.** After 9 geopolitical shocks, Brent moved anywhere from **−63% to +17%** in 12 weeks; the median was near zero. |
+| Did a data-timing leak matter? | Monthly data was dated before it was published. Fixing it changed accuracy by only ~1%, but revealed the deployed model is **significantly worse than no-change at 12 weeks** (Holm p = 0.038). |
+| How does the live model do on unseen data? | On the 45 weeks added in November 2026: one-week error **$8.27 vs $8.29** for no-change. Still no edge. |
 
-The **X in SARIMAX** (eXogenous variables) is the critical design choice. It allows five macro drivers to be injected directly into the forecast — without it, scenario simulation is impossible.
-
-**Key model coefficient:**
-```
-dollar_return coefficient = -107.80  (p < 0.001)
-
-Interpretation:
-  A 1% appreciation in the US dollar index
-  corresponds to a $1.08/barrel drop in Brent crude.
-  Economically interpretable. Statistically significant.
-  Directionally consistent with oil being USD-denominated.
-```
+**The takeaway:** the project's value is not a clever price prediction. It is a scenario tool
+built on an evaluation that tells the truth about what can and cannot be predicted.
 
 ---
 
-## 📊 Model Specification
+## How it works
 
-```
-Model:         SARIMAX(1, 1, 1)(1, 0, 1, 52)
-                │  │  │   │  │  │   52 = weekly seasonality
-                │  │  │   └──┴──┘ seasonal AR, I, MA terms
-                └──┴──┘ non-seasonal AR, differencing, MA terms
-
-Production fit: all 1,043 weekly observations (2006 – Jan 2026)
-Forecasts start: the week after the latest observation in the dataset
-Evaluation:    walk-forward backtest, 198 weekly origins (2022 – 2025),
-               parameters re-estimated yearly (see "Model Evaluation")
-
-Exogenous variables (5 macro drivers):
-  dollar_return   → DXY US Dollar Index weekly return
-  indpro_return   → US Industrial Production weekly change
-  inventory_pct   → US crude oil inventory % change (EIA)
-  fed_funds_diff  → Federal Funds Rate weekly difference
-  vix_diff        → CBOE VIX (fear index) weekly difference
+```mermaid
+flowchart LR
+    Q["Your question"] --> LLM["gpt-oss-120b<br/>weights 5 scenarios"]
+    LLM --> MAC["Live macro signals<br/>adjust the weights"]
+    MAC --> SAR["SARIMAX<br/>one projection per scenario"]
+    SAR --> OUT["Weighted outlook<br/>+ 80% / 95% band"]
+    EV["31 historical events"] --> HIS["What happened after<br/>similar events"]
+    OUT --> EXP["Written explanation"]
+    HIS --> EXP
+    EXP --> UI["Streamlit app"]
 ```
 
-**Note on accuracy:** an earlier version of this README quoted a 15.22% test MAPE. That number came from a single 209-week forecast that was given the *actual future* macro values, and a flat "no change" forecast scored better on the same weeks (12.39%). The honest walk-forward results are in [Model Evaluation](#-model-evaluation). The system's value is scenario comparison, not point forecasting.
+1. **Scenario weights.** The language model reads the question and spreads probability over
+   five scenarios. If it is unavailable, a safe default is used instead of failing.
+2. **Market adjustment.** Current VIX level, dollar trend, inventory change and Fed policy
+   nudge the weights, which are then renormalised.
+3. **Projection.** One SARIMAX model, refit whenever new data is promoted, projects Brent under each
+   scenario's macro shock. Forecasts start from the latest complete week of data.
+4. **Combination.** Scenario paths are averaged by weight. The UI shows the expected path,
+   the spread across scenarios, and the model's own 80% and 95% statistical band.
+5. **History and explanation.** The app shows the range of Brent moves after comparable real
+   events, and the language model writes an explanation that uses only the computed numbers.
 
 ---
 
-## 🔄 Probabilistic Simulation Pipeline
+## For ML engineers: methodology
 
-```
-Step 1 — LLM Probability Parsing
-  Natural language query →
-  gpt-oss-120b (Groq) →
-  { scenario_key: probability_weight } across relevant scenarios
+Each step below has its own reproducible script and generated report.
 
-Step 2 — Macro Signal Adjustment
-  Read live VIX, dollar, inventory, Fed funds from dataset →
-  Adjust LLM probabilities using real market signals →
-  Renormalise weights to sum to 1.0
+### 1. Walk-forward evaluation ([report](reports/backtest/report.md))
+- **Design:** expanding window, 198 weekly origins (Jan 2022 – Oct 2025), horizons 1–12
+  weeks, yearly re-estimation with Kalman-filter updates in between.
+- **Leakage guards:** forecasters receive read-only history up to the origin; future
+  exogenous values go only to models explicitly flagged as oracles. Tests enforce both.
+- **Baselines:** naive, seasonal naive, drift. Metrics: MAE, RMSE, MAPE, MASE, MAE relative
+  to naive, directional accuracy, interval coverage.
+- **Significance:** Diebold–Mariano with the Harvey–Leybourne–Newbold correction; Holm
+  adjustment across every model × horizon test.
 
-Step 3 — Baseline Forecast
-  SARIMAX → forecast with ZERO shocks →
-  "What happens if nothing changes"
+| MAE relative to naive (< 1 = better) | 1 week | 4 weeks | 12 weeks |
+|---|---|---|---|
+| SARIMAX (as deployed) | 1.012 | 1.024 | 1.045 |
+| Plain SARIMA | 1.009 | 1.020 | 1.039 |
+| Ridge, lagged features | 1.015 | 1.044 | 0.998 |
+| Gradient-boosted quantile trees | 1.003 | 1.117 | 1.273 |
 
-Step 4 — Per-Scenario SARIMAX Forecasts
-  Drop scenarios under 5% weight, renormalise the rest to sum to 1.0
-  Compute the no-shock baseline once, with its 80% / 95% statistical band
-  For each remaining scenario:
-    Build exogenous shock matrix →
-    SARIMAX → shocked forecast →
-    Apply direction correction if needed
+### 2. Challengers ([features](evaluation/features.py), [models](evaluation/forecasters.py))
+Direct multi-horizon models on lagged features only, with time-series CV using `gap=h` so
+overlapping labels cannot leak. A **positive control** (a synthetic series with a real
+signal) proves the pipeline can find signal when it exists, so the null result is credible.
 
-Step 5 — Weighted Distribution Assembly
-  expected_price[t] = Σ (probability_i × price_i[t]) for each week
-  price_range = [min scenario week-12, max scenario week-12]
-  Safety clamp: expected price always sits inside range
+### 3. Calibration ([report](reports/calibration/report.md))
+Coverage with Newey–West standard errors (overlapping forecasts are correlated), the
+interval score as the selection criterion, and coverage split by regime. Conformal methods
+were dominated by the 2020 crash for as long as it stayed in the calibration window;
+volatility scaling fixed short horizons but blew up at 12 weeks.
 
-Step 6 — LLM Explanation
-  Actual model numbers + scenario breakdown →
-  gpt-oss-120b →
-  Institutional research note: expected price, range
-  interpretation, macro signal effects
+### 4. Scenario calibration ([report](reports/scenarios/report.md))
+A leave-one-event-out event study on 31 dated events, with confounded events flagged in
+advance and a sensitivity analysis. Historical medians forecast worse than both the current
+engine and no-change (12-week MAE 0.216 vs 0.191 vs 0.188), so history is shown only as
+labelled context.
 
-Step 7 — Response to UI
-  Expected price, range, scenario breakdown,
-  probability shifts, fan chart data, explanation
-```
-
----
-
-## 🗂️ Project Structure
-
-```
-crude-oil-forecaster/
-│
-├── app.py                  # FastAPI backend — all REST endpoints
-├── run.py                  # Local launcher for the API (uvicorn)
-├── scenario_engine.py      # Core engine — SARIMAX + direction correction
-│                           # + macro probability adjustment
-├── llm_explainer.py        # Groq (gpt-oss-120b) — parsing + explanation
-├── utils.py                # Model loading, data helpers
-├── scenario_library.py     # Event study: Brent moves after past events of each type
-├── train.py                # Fits the production model on all data (Render build)
-├── streamlit_ui/
-│   ├── app_ui.py           # Streamlit frontend — probabilistic UI
-│   └── requirements.txt    # UI-only dependencies (isolated from the API's)
-├── models/
-│   └── sarimax_model.pkl   # Generated at build time — not in GitHub
-│
-├── data/
-│   ├── oil_macro_weekly.csv        # Weekly data (2006 – Jan 2026)
-│   ├── oil_macro_transformed.csv  # Stationary transformed features
-│   ├── scenario_events.csv        # 31 dated historical events per scenario type
-│   ├── raw/                       # Raw source snapshots (the pipeline's source of truth)
-│   └── staging/                   # Freshly built candidate dataset (not committed)
-│
-├── pipeline/               # Fetch raw data, build + validate the dataset, diff reports
-├── evaluation/             # Walk-forward backtest, challengers, conformal calibration
-├── reports/
-│   ├── backtest/report.md     # Accuracy vs baselines, promotion decisions
-│   ├── calibration/report.md  # Interval coverage and calibration
-│   ├── scenarios/report.md    # Scenario calibration on historical events
-│   └── data/                  # Reproduction check and data diff reports
-├── tests/                  # pytest suite (API, engine, LLM, evaluation)
-│
-├── requirements.txt        # Pinned dependencies (Python 3.11 stable)
-├── .python-version         # Pins Python 3.11.8 — fixes Render build
-└── .env                    # Local secrets (never committed)
-```
+### 5. Data timing ([report](reports/data/recipe_comparison.md))
+Monthly series are shifted to their publication dates (`v2-release-aware` recipe) and
+partial final weeks are dropped. The change was adopted on principle before measuring it.
 
 ---
 
-## 🚀 API Endpoints
+## Data pipeline and MLOps
 
-Base URL: `https://crudeoil-forecaster.onrender.com`
+```mermaid
+flowchart LR
+    SRC["FRED + EIA"] --> RAW["Raw snapshots<br/>data/raw"]
+    RAW --> BLD["Build + validate"]
+    BLD --> STG["Staging<br/>+ manifest"]
+    STG --> GATE{"Promotion gate<br/>G1–G4"}
+    GATE -->|pass| PR["Pull request<br/>for review"]
+    GATE -->|fail| STOP["Run fails,<br/>owner notified"]
+    PR -->|merge| MAIN["main"] --> RND["Render redeploys<br/>and retrains"]
+```
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/` | Health check |
-| `GET` | `/health` | Keepalive ping endpoint |
-| `GET` | `/docs` | Interactive Swagger UI |
-| `GET` | `/scenarios` | List all predefined scenario keys |
-| `GET` | `/current-price` | Latest Brent price from dataset |
-| `POST` | `/simulate` | Single-scenario simulation (deterministic) |
-| `POST` | `/simulate-probabilistic` | **Main endpoint** — probabilistic multi-scenario simulation |
-| `POST` | `/simulate-direct` | Run by scenario key — bypasses LLM parsing |
+- **Sources:** FRED's public CSV endpoint (Brent, industrial production, dollar index, fed
+  funds, VIX) and the EIA API (US crude stocks including the SPR), with retries and backoff.
+- **Reproducibility:** builds read only raw snapshots. Rebuilding the original notebook
+  dataset matches it exactly except for documented differences (source revisions and a partial final week)
+  ([report](reports/data/reproduction.md)).
+- **Validation:** gaps, missing values, implausible levels and internal consistency block a
+  build; extreme moves and stale data are flagged for review.
+- **Promotion gate** ([`pipeline/promote.py`](pipeline/promote.py)):
 
-### Example — Probabilistic Simulation Request
+  | Gate | Check |
+  |---|---|
+  | G1 data | Validation passed and the production recipe was used |
+  | G2 continuity | No dates removed; at most 5% of rows revised per column (otherwise a human reviews) |
+  | G3 fit | The refit converged with finite parameters |
+  | G4 sanity | The 12-week forecast and band are finite and within 0.5×–2× the last price |
+
+  Only G2 can be overridden, and only with a written reason. Promotions are written
+  atomically, and identical data is never promoted twice.
+- **Registry:** [`models/registry.json`](models/registry.json) records data hashes, fit summary,
+  gate results, any override and the previous version, so every forecast can be traced back.
+- **Automation:** `ci.yml` runs the tests and a UI dependency check on every push;
+  `data-refresh.yml` runs every Thursday and opens a pull request when new data passes.
+
+---
+
+## Run it yourself
+
+**Prerequisites:** Python 3.11 and a free [Groq API key](https://console.groq.com). A
+[FRED API key](https://fredaccount.stlouisfed.org) is optional (used only for the live price
+in the sidebar).
 
 ```bash
-curl -X POST "https://crudeoil-forecaster.onrender.com/simulate-probabilistic" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What if Middle East tensions rise while demand also grows?", "forecast_weeks": 12}'
-```
-
-### Example Response (abbreviated)
-
-```json
-{
-  "price_expected": 87.00,
-  "price_low": 80.12,
-  "price_high": 93.45,
-  "primary_driver": "geopolitical_tension",
-  "primary_driver_name": "Major Geopolitical Tension",
-  "scenario_breakdown": {
-    "geopolitical_tension": { "probability": 0.55, "week12_price": 91.20 },
-    "demand_boom":           { "probability": 0.30, "week12_price": 88.40 },
-    "opec_cut":              { "probability": 0.15, "week12_price": 89.10 }
-  },
-  "adjusted_probabilities": { ... },
-  "macro_adjustments": {
-    "vix_high_geo": "VIX elevated → geopolitical weight +30%"
-  },
-  "weighted_forecast": [84.2, 85.1, 85.8, ...],
-  "baseline_forecast": [82.6, 82.6, 82.6, ...],
-  "explanation": "Brent crude is expected to reach $87.00/barrel...",
-  "uncertainty_note": "Scenario probabilities are LLM-estimated..."
-}
-```
-
----
-
-## 🛠️ Local Development Setup
-
-### Prerequisites
-
-- Python 3.11
-- [Groq API key](https://console.groq.com) (free)
-- [FRED API key](https://fredaccount.stlouisfed.org) (free)
-
-### Installation
-
-```bash
-# 1. Clone the repository
 git clone https://github.com/Jaywestty/CrudeOil-Forecaster.git
 cd CrudeOil-Forecaster
 
-# 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate       # Windows: venv\Scripts\activate
-
-# 3. Install dependencies
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 4. Create .env file
-GROQ_API_KEY=your_groq_key_here
-FRED_API_KEY=your_fred_key_here
+echo "GROQ_API_KEY=your_key" > .env  # optionally also FRED_API_KEY=...
 
-# 5. Train the model (once, ~1 minute)
-python train.py
+python train.py                      # fit the model (~1 minute)
+uvicorn app:app --reload             # API on http://localhost:8000 (docs at /docs)
+```
 
-# 6. Start the FastAPI backend
-uvicorn app:app --reload
-# API: http://localhost:8000
-# Docs: http://localhost:8000/docs
+In a second terminal, with a **separate** virtual environment (the UI pins its own versions):
 
-# 7. In a new terminal, install the Streamlit UI's dependencies and start it
-#    (use a separate virtual environment: the UI pins its own versions)
+```bash
 pip install -r streamlit_ui/requirements.txt
-streamlit run streamlit_ui/app_ui.py
-# UI: http://localhost:8501
+streamlit run streamlit_ui/app_ui.py   # http://localhost:8501 (talks to the API on localhost:8000)
+```
 
-# 8. Run the tests and (optionally) the evaluation
-pytest
-python -m evaluation.run_backtest      # ~8 min  -> reports/backtest/report.md
-python -m evaluation.run_calibration   # ~4 min  -> reports/calibration/report.md
-python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
+**Tests and experiments:**
+
+```bash
+pytest                                      # 140 tests, ~20 s
+python -m evaluation.run_backtest           # ~8 min  -> reports/backtest/
+python -m evaluation.run_calibration        # ~4 min  -> reports/calibration/
+python -m evaluation.run_scenario_study     # ~1 min  -> reports/scenarios/
+python -m pipeline.refresh --fetch          # fetch + build + validate -> data/staging/
+python -m pipeline.promote                  # dry run of the promotion gate
 ```
 
 ---
 
-## 🔁 Data Pipeline
+## API
 
-The dataset was originally built by hand in a Colab notebook. It is now rebuilt by a
-tested pipeline:
+Base URL: `https://crudeoil-forecaster.onrender.com` · interactive docs at
+[`/docs`](https://crudeoil-forecaster.onrender.com/docs)
 
-```
-python -m pipeline.refresh --fetch     # download raw series, build, validate -> data/staging/
-python -m pipeline.compare data data/staging --out reports/data/staged_vs_current.md
-python -m pipeline.promote             # dry run: refit on staged data and check the gates
-python -m pipeline.promote --apply     # promote data + model if every gate passes
-```
-
-- **Raw snapshots** (`data/raw/`) are the source of truth: builds read only these files, so
-  any dataset can be rebuilt offline exactly as it was.
-- **Validation** blocks structurally wrong or implausible data (gaps, missing values, unit
-  errors, inconsistent transforms) and flags unusual moves and stale data for review.
-- **Staging, not overwrite:** new data lands in `data/staging/` with a `manifest.json`
-  (sources, recipe, hashes, validation). Promoting it to `data/` is a separate decision,
-  because new data changes the model and every report.
-- **Reproducibility check:** rebuilding to 2025-12-31 matches the notebook's data exactly for
-  inventories, dollar, fed funds and VIX. The only differences are source revisions: recent
-  industrial production, and a few 2006 Brent days FRED no longer serves
-  ([`reports/data/reproduction.md`](reports/data/reproduction.md)).
-
-Recipes (`pipeline/build.py`): `v1-notebook` reproduces the original data, including its
-half-finished final week; `v1.1-complete-weeks` keeps only weeks that have ended;
-`v2-release-aware` (production) also moves monthly series to when they were actually
-published, so no backtest or model ever sees a figure before its release date.
-[`reports/data/recipe_comparison.md`](reports/data/recipe_comparison.md) measures the old
-leak: about 1% of error, but with honest timing the deployed SARIMAX setup becomes
-significantly worse than a no-change forecast at 12 weeks (Holm p = 0.038, vs 0.12 with the leak).
-
-### Promotion gate and model registry
-
-New data only goes live through `pipeline.promote`, which refits the model on the staged
-data and checks four gates, fixed before any result was seen:
-
-| Gate | Check |
-|---|---|
-| G1 data | Staged data passed validation and uses the production recipe |
-| G2 continuity | No dates removed; at most 5% of rows revised per column (more needs human review) |
-| G3 fit | The refit converged with finite parameters |
-| G4 sanity | The 12-week forecast and band are finite and within 0.5x–2x the last price |
-
-The gates catch breakage, not improvement: the model specification was already validated by
-the walk-forward backtests. Only G2 can be overridden, with a written reason; invalid data or
-a broken fit never goes live. Each promotion is appended to
-[`models/registry.json`](models/registry.json) with the data hashes, fit summary, gate results,
-any override reason and a pointer to the previous version (so it can be rolled back). The gate
-also reports how the current model did on the newly arrived weeks, against a no-change forecast.
-
-The first promotion (version `2026-11-15-37de0d09`) moved the live data from January 2026
-(Brent $61.35) to 15 November 2026 ($95.17), switching to the release-aware recipe with a
-reviewed G2 override. On the 45 new weeks the previous model's one-week error was $8.27 vs
-$8.29 for no-change: no edge, as the backtests predicted.
-
----
-
-### Automation (GitHub Actions)
-
-| Workflow | When | What it does |
+| Method | Endpoint | Purpose |
 |---|---|---|
-| `ci.yml` | Every push and pull request | Runs the full test suite on the deployment's Python version, and checks the Streamlit UI's dependencies resolve and the app compiles |
-| `data-refresh.yml` | Thursdays 14:00 UTC, or on demand | Runs `python -m pipeline.weekly`: fetch, validate, diff, gate, promote. If new data passes the gate, it opens a pull request with the data, registry entry and reports |
+| `GET` | `/` | Status and model info (forecaster, LLM, data date) |
+| `GET` | `/health` | Lightweight keep-alive check |
+| `GET` | `/scenarios` | The five predefined scenarios |
+| `GET` | `/current-price` | Latest Brent price from FRED, falling back to the dataset |
+| `POST` | `/simulate-probabilistic` | **Main endpoint**: weighted multi-scenario outlook |
+| `POST` | `/simulate` | Single best-fit scenario |
+| `POST` | `/simulate-direct` | Run one scenario by key, no LLM |
 
-The refresh never pushes to `main`: a person reviews and merges its pull request, and the
-merge triggers the Render redeploy (which retrains the model on the promoted data). A failed
-validation or gate fails the run, so GitHub notifies the repository owner, and the reports are
-attached to the run. Gate overrides are never automatic.
+```bash
+curl -X POST https://crudeoil-forecaster.onrender.com/simulate-probabilistic \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What if OPEC cuts production by 10%?", "forecast_weeks": 12}'
+```
 
-One-time setup: in the repository's Settings → Actions → General, allow GitHub Actions to
-create pull requests. Optionally add an `EIA_API_KEY` secret (the public `DEMO_KEY` is used
-otherwise).
+The response includes the expected path, scenario paths and weights (LLM, macro-adjusted and
+final), the 80%/95% statistical band with its measured coverage, forecast dates, historical
+event context, the explanation, and model info.
 
 ---
 
-## 📦 Data Sources
-
-| Variable | Source | Frequency | Description |
-|---|---|---|---|
-| Brent Crude Price | EIA / FRED | Weekly | USD per barrel |
-| US Dollar Index | FRED (DTWEXBGS) | Weekly | DXY trade-weighted index |
-| Industrial Production | FRED (INDPRO) | Monthly → Weekly | US manufacturing output |
-| Crude Inventories | EIA (WCRSTUS1) | Weekly | US crude ending stocks, including the SPR |
-| Federal Funds Rate | FRED (FEDFUNDS) | Monthly → Weekly | US benchmark interest rate |
-| VIX | FRED (VIXCLS) | Daily → Weekly | CBOE volatility / fear index |
-
----
-
-## 🧪 Model Evaluation
-
-Every forecast below was made using only data available at the time (walk-forward,
-198 weekly origins from Jan 2022 to Oct 2025, parameters re-estimated yearly). These reports
-were run on the original dataset (through Jan 2026); each records the data fingerprint it used.
-Full reports: [`reports/backtest/report.md`](reports/backtest/report.md) and
-[`reports/calibration/report.md`](reports/calibration/report.md).
+## Project structure
 
 ```
-Point accuracy: MAE relative to a "price stays the same" forecast (< 1.00 = better)
-                          1 week   4 weeks   12 weeks
-  SARIMAX (as deployed)    1.012    1.024     1.045
-  Plain SARIMA             1.009    1.020     1.039
-  Ridge (lagged features)  1.015    1.044     0.998
-  Gradient-boosted trees   1.003    1.117     1.273
-  -> No model beats the no-change forecast significantly
-     (Diebold-Mariano, Holm-corrected, rule fixed before testing).
-
-Why the macro variables don't help:
-  - Dollar/oil weekly correlation: -0.39 in 2006-21, -0.06 in 2022-25
-    (VIX: -0.33 -> -0.07). The relationship broke after 2021.
-  - In this specification a macro shock shifts the price once;
-    it does not build up over the horizon.
-
-Statistical band (95%) coverage: ~85% at 1 week, ~92% at 4, ~97% at 12,
-  but only ~71-85% during the 2022 crisis (too narrow in turmoil).
-```
-
-**What this means:** weekly Brent prices are close to unpredictable from these
-inputs, which matches the forecasting literature. The app is therefore framed as a
-**scenario analysis** tool: compare what-ifs against the no-shock baseline, and
-read the statistical band as a typical-conditions range.
-
-### Scenario calibration on historical events
-
-Could scenarios be calibrated on what Brent actually did after real events, instead of
-hand-tuned macro shocks? [`reports/scenarios/report.md`](reports/scenarios/report.md) tests
-this on 31 dated events (OPEC cuts, geopolitical shocks, recessions, Fed hikes, demand
-surges), with the catalogue and decision rule fixed before any outcome was computed.
-
-```
-Leave-one-event-out, 12-week cumulative move (mean absolute error, log points)
-  Naive (no move)                        0.188
-  Current engine (SARIMAX shocks)        0.191
-  Historical median of other events      0.216   -> rule says keep the current engine
-
-12-week Brent moves after past events (median, range)
-  Geopolitical tension (9)   -0.3%   (-63% to +17%)
-  OPEC cut (8)               +8.3%   (-36% to +68%)
-  Global recession (4)      -15.3%   (-61% to  -4%)
-```
-
-Events with the same label had very different effects, so the median is a poor forecast.
-The app therefore shows this history as **context** ("after 9 similar events, Brent moved
-between -63% and +17% within 12 weeks"), never as the scenario forecast itself.
-
----
-
-## 📖 Reading the Output Numbers
-
-When the system returns a result, four numbers appear. Here is exactly what each one means and how they relate to each other.
-
-**Example output:**
-```
-Live Price (sidebar):   $94.00
-Baseline Wk 12:         $82.63
-Expected Price Wk 12:   $87.23    (+$4.60 vs baseline)
-Forecast Range:         $81 – $90
-```
-
-### What each number is
-
-```
-$94.00  Live Price
-        The real current Brent crude market price,
-        fetched live from FRED (DCOILBRENTEU series).
-        This is display only — it does NOT feed into
-        the model's forecast calculations.
-
-$82.63  Baseline Week-12 Price
-        What SARIMAX forecasts at week 12 if absolutely
-        nothing changes — no scenario applied.
-        The model starts from its last training observation
-        ($61.35, the final row of the dataset) and projects
-        forward using current macro conditions.
-
-$87.23  Expected Price Week-12
-        What SARIMAX forecasts at week 12 WITH your scenario
-        applied — the probability-weighted average across all
-        relevant scenarios.
-
-+$4.60  The difference between expected ($87.23) and
-        baseline ($82.63). Your scenario adds $4.60 to
-        what would have happened naturally.
-
-$81–$90 The spread across all scenarios considered.
-        $81 = lowest-priced scenario outcome (worst case)
-        $90 = highest-priced scenario outcome (best case)
-        $87.23 sits inside this range — the weighted midpoint.
-```
-
-### How all four numbers connect
-
-```
-Real market today          Model baseline            Model expected
-     $94.00        →           $82.63        →           $87.23
-  (FRED live,              (no shock applied,        (scenario applied,
-  display only)             from dataset)            +$4.60 uplift)
-
-                                    ↑
-                     Range: $81 ────┼──── $90
-                                 $87.23
-                           (expected sits here)
-```
-
-### Why the live price ($94) and baseline ($82.63) are different
-
-This is the most common question and the most important one to understand.
-
-The SARIMAX model was trained on a dataset whose last observation is **$61.35** (early 2026). The live FRED price of $94 is fetched separately for display purposes only — it does not update the model's starting point. So the model forecasts forward from $61.35, arriving at a baseline of $82.63 at week 12. The real market is at $94 because prices moved after the dataset cutoff.
-
-```
-Dataset ends:     $61.35  ← model's last known price
-Model baseline:   $82.63  ← model's week-12 forecast from $61.35
-FRED live price:  $94.00  ← real market today (display only)
-
-The $94 and $82.63 are on different reference points.
-They are not directly comparable.
-```
-
-The system's value is in **relative scenario comparison** — how much a specific shock moves prices relative to the no-shock baseline — not in absolute price level accuracy. In a production deployment, the model would be retrained periodically so its starting observation stays close to the current market price.
-
-### Scenario spread vs statistical band
-
-The UI shows two different ranges, and they answer different questions:
-
-```
-Scenario spread      lowest -> highest scenario price at the final week.
-                     "How far apart are the what-ifs?" Not a probability range.
-
-80% / 95% band       the model's own uncertainty around the no-shock baseline.
-                     "Where would the price typically land if nothing special
-                     happens?" Close to nominal coverage on average, but too
-                     narrow in crises (see Model Evaluation).
-```
-
-### Historical context
-
-The Scenarios tab also shows what Brent did after past events of each type, one dot per
-event. This is history, not a forecast: it shows how wide real outcomes were, and the
-step-2a test found its median did not predict better than assuming no change.
-
-### What the forecast range tells you
-
-```
-Range $81–$90 with expected $87.23 means:
-
-  If the bearish scenarios dominate → price lands near $81
-  If the bullish scenarios dominate → price lands near $90
-  Probability-weighted best estimate → $87.23
-
-  A narrow range (e.g. $85–$88) = high scenario agreement,
-  low uncertainty
-
-  A wide range (e.g. $75–$100) = scenarios strongly disagree,
-  high uncertainty — the query likely involves multiple
-  competing forces
+├── app.py                  FastAPI service
+├── scenario_engine.py      Scenario weights, SARIMAX projections, historical context
+├── llm_explainer.py        Groq / gpt-oss-120b parsing and explanations, with fallbacks
+├── scenario_library.py     Event study: Brent moves after past events
+├── modeling.py             Production model spec, fitting and the small serving model
+├── train.py                Builds the served model (runs on every Render deploy)
+├── streamlit_ui/           Streamlit app and its isolated requirements
+├── evaluation/             Backtest, challengers, calibration, scenario study
+├── pipeline/               Fetch, build, validate, diff, promotion gate, weekly job
+├── data/                   Live dataset, raw snapshots, event catalogue, manifest
+├── models/registry.json    Promotion history (the model file itself is built on deploy)
+├── reports/                Generated evaluation and data reports
+├── tests/                  140 tests
+└── .github/workflows/      CI and the weekly data refresh
 ```
 
 ---
 
-## ⚙️ Deployment Architecture
+## Deployment
 
-### Backend — Render (FastAPI)
-
-```
-Platform:       Render Web Service (Free Tier)
-Runtime:        Python 3.11.8 (pinned via .python-version)
-Build Command:  pip install -r requirements.txt && python train.py
-Start Command:  uvicorn app:app --host 0.0.0.0 --port $PORT
-Model storage:  Trained fresh on every deploy — no binary in GitHub
-Auto-deploy:    Yes — triggers on every push to main branch
-
-Why train on deploy:
-  SARIMAX model = ~300MB → above GitHub 100MB hard limit
-  Retrained on each deploy → model always reflects latest code
-  Trade-off: adds 5–10 minutes to build time
-
-Free Tier behaviour:
-  ✅ 512MB RAM — sufficient for SARIMAX in memory
-  ⚠️  Spins down after 15 min of inactivity (cold start)
-  ⚠️  Cold start: 30–60 seconds to wake up
-```
-
-### Frontend — Streamlit Cloud
-
-```
-Platform:    Streamlit Community Cloud (Free)
-Entry point: streamlit_ui/app_ui.py
-Secrets:     API_URL set via Streamlit Cloud dashboard
-Auto-deploy: Yes — triggers on every push to main branch
-```
-
----
-
-## 🔐 Environment Variables
-
-| Variable | Where to Set | Description |
+| Part | Platform | Details |
 |---|---|---|
-| `GROQ_API_KEY` | Render → Environment | gpt-oss-120b access via Groq |
-| `GROQ_MODEL` | Render → Environment (optional) | Override the Groq model (default `openai/gpt-oss-120b`) |
-| `FRED_API_KEY` | Render → Environment | FRED macroeconomic data |
-| `API_URL` | Streamlit Cloud → Secrets | Render backend URL |
+| API | Render (free tier, 512 MB) | Build: `pip install -r requirements.txt && python train.py` · Start: `uvicorn app:app --host 0.0.0.0 --port $PORT` · Python 3.11.8 from `.python-version` |
+| UI | Streamlit Community Cloud | Entry point `streamlit_ui/app_ui.py`; `API_URL` set as a secret |
+| Data | GitHub Actions | Weekly refresh opens a pull request; merging it redeploys the API |
 
-**Never commit `.env` to GitHub.** It is in `.gitignore`.
+| Variable | Where | Purpose |
+|---|---|---|
+| `GROQ_API_KEY` | Render | LLM access |
+| `GROQ_MODEL` | Render (optional) | Override the default `openai/gpt-oss-120b` |
+| `FRED_API_KEY` | Render (optional) | Live price in the sidebar |
+| `API_URL` | Streamlit secrets | Backend URL |
+| `EIA_API_KEY` | GitHub secret (optional) | Inventories; EIA's public `DEMO_KEY` otherwise |
 
----
-
-## 💬 Predefined Scenarios
-
-| Scenario Key | Name | Direction | Primary Shock |
-|---|---|---|---|
-| `opec_cut` | OPEC Production Cut | 📈 Bullish | Dollar weakens, inventories draw |
-| `geopolitical_tension` | Major Geopolitical Tension | 📈 Bullish | Supply disruption, hoarding |
-| `demand_boom` | Global Demand Boom | 📈 Bullish | Industrial surge, inventories draw |
-| `global_recession` | Global Recession | 📉 Bearish | Industrial collapse, inventory build |
-| `rate_hike` | Aggressive Fed Rate Hike | 📉 Bearish | Dollar strengthens, demand slows |
+One-time setup for the weekly refresh: in the repository's **Settings → Actions → General**,
+allow GitHub Actions to create pull requests. Never commit `.env`; it is git-ignored.
 
 ---
 
-## 🧩 Technical Decisions & Trade-offs
+## Design decisions and trade-offs
 
-**Why probabilistic instead of single-scenario?**
-Real oil market queries often involve multiple competing forces simultaneously — "OPEC cuts while demand grows" involves both supply tightening and demand pull. A single scenario picks one and ignores the other. A probability distribution weights both, produces a meaningful expected price, and exposes the uncertainty range. This is how energy trading desks actually think.
-
-**Why LLM probability assignment + macro signal adjustment?**
-The LLM interprets the user's language and assigns base probabilities. But language alone misses what the market is currently pricing — a geopolitical question asked during a calm low-VIX period should carry different weights than the same question during market panic. The macro adjustment layer bridges that gap using real data, making the system partially data-driven rather than purely LLM-dependent.
-
-**Why post-processing direction correction?**
-The SARIMAX model learned from 2006–2022 data. During that window, supply disruption signals often preceded demand collapses (2008 global crisis, 2014 glut). This means the model associates supply shock signals with price decreases — the opposite of economic theory. Rather than retraining with different data (which would lose 17 years of calibration), a direction correction mirrors the price impact around the baseline for scenarios where the model output contradicts economic fundamentals. The model's magnitude estimate is preserved; only the direction is corrected when wrong.
-
-**Why SARIMAX over XGBoost or Prophet?**
-XGBoost treats observations as independent rows — it has no concept of time order, cannot model seasonality, and has no native mechanism for injecting future exogenous shocks into a forecast. Prophet is built for daily business metrics with calendar patterns. SARIMAX was specifically designed for multivariate time series with external regressors — exactly what macro-driven oil price simulation requires.
-
-**Why Groq for the LLM?**
-Groq's LPU inference hardware returns responses in a few seconds, which matters for a real-time UI that calls the LLM several times per simulation. The model is `openai/gpt-oss-120b`, an open-weight reasoning model on Groq's free tier (same API key). It runs with low reasoning effort and extra token headroom so its reasoning never crowds out the answer.
-
-**Why train the model on Render instead of committing it?**
-The trained SARIMAX model is ~300MB — above GitHub's 100MB hard limit. Rather than using Git LFS or external storage, the model is retrained on every Render deploy via the build command. This keeps the repository clean, ensures the model always reflects the latest code and data, and avoids external storage dependencies. Trade-off: adds 5–10 minutes to build time per deploy.
+- **SARIMAX as the engine.** It can take macro shocks as inputs, which a scenario tool needs,
+  and its coefficients are interpretable. It does not beat no-change, but neither did any
+  alternative tested, so the simpler, explainable model stays.
+- **Scenario weights from an LLM, adjusted by data.** Language alone misses what markets are
+  pricing; a small, transparent rule set nudges the weights using current conditions.
+- **The direction correction stays.** Bullish scenarios that the model pushes downward are
+  mirrored around the baseline. Replacing this with event-calibrated paths was tested and
+  forecast worse, so it remains, documented as a heuristic.
+- **History as context, not forecast.** Event outcomes are too varied to predict with, but
+  they show how wide real outcomes are, which is exactly what a scenario user needs to see.
+- **The model is built on deploy, not stored in git.** Render rebuilds it from the promoted
+  data. Only the final filter state is saved (2.8 MB instead of 488 MB), with identical
+  forecasts.
+- **A human merges every data update.** Automation does the routine work; a person approves
+  what changes production.
 
 ---
 
-## 📝 Known Limitations & Future Improvements
+## Limitations and next steps
 
-```
-Current limitations:
-  - Scenario probabilities are LLM-estimated, not derived from
-    options market implied volatility or historical scenario frequencies
-  - No model beats a no-change forecast for weekly prices (see Model Evaluation)
-  - Macro relationships learned before 2022 largely broke afterwards
-  - Statistical bands are too narrow during crises
-  - Data refreshes are automated weekly but still merged by a person (by design)
-  - 12-week forecast horizon — the range the backtests validated
-  - Five fixed scenarios — cannot model novel events without mapping
-    to one of the five (e.g. carbon taxes, SPR releases)
-  - Direction correction is a heuristic, not a structural fix. Replacing it with
-    event-calibrated paths was tested (step 2a) and did not forecast better, so it
-    stays, documented as a known limitation
+**Limitations**
+- No model beats a no-change forecast for weekly Brent; treat outputs as scenarios.
+- Statistical bands are too narrow in crises.
+- Scenario weights come from a language model, not from market-implied probabilities.
+- Five fixed scenarios: novel events (carbon taxes, SPR releases) have to map onto one of them.
+- Scenario shocks shift the price once rather than building up over the horizon.
 
-Natural next upgrades:
-  - Duration profiles: short-war vs prolonged-war shock decay
-  - Options-implied probability calibration
-  - Regime detection model for automatic macro context
-  - Scheduled data refresh and retraining
-  - Scenario shocks that build up over the horizon, calibrated on past events
-```
+**Next steps**
+- Production hardening: containerisation, exact dependency locking, response caching and
+  runtime monitoring.
+- A rigorous evaluation set for the LLM layer (consistency and correctness of the weights).
+- Volatility forecasts (e.g. GARCH) for intervals that hold up in crises.
 
 ---
 
-## 📝 License
+## License
 
-MIT License — free to use, modify, and distribute.
-
----
-
-*End-to-end ML system covering data ingestion, econometric modeling, probabilistic simulation, LLM integration, macro signal adjustment, REST API, and cloud deployment.*
+MIT. Free to use, modify and distribute.
