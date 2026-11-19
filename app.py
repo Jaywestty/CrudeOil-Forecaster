@@ -81,7 +81,7 @@ app = FastAPI(
     including this one, beats a no-change forecast for weekly Brent prices in
     2022–2025. Treat outputs as scenario analysis, not price prediction.
     """,
-    version="2.1.0"
+    version="2.2.0"
 )
 
 # Coverage of the statistical band, measured in the walk-forward backtests
@@ -92,6 +92,16 @@ STATISTICAL_BAND_NOTE = (
     "about 85% of the time at 1 week, 92% at 4 weeks and 97% at 12 weeks. During the "
     "2022 crisis, bands like this covered only about 71–85%. Read it as a range for "
     "typical conditions, not a worst case."
+)
+
+# Step 2a (reports/scenarios/report.md): historical event medians did not
+# forecast better than the engine or a no-change forecast, so history is shown
+# as context only.
+HISTORICAL_NOTE = (
+    "What Brent did in the weeks after past events of the same type, measured from "
+    "the last price before each event. This is history, not a forecast: events with "
+    "the same label had very different effects, and a leave-one-out test found the "
+    "historical median did not predict better than assuming no change."
 )
 
 # ── CORS ───────────────────────────────────────────────────────────
@@ -166,6 +176,23 @@ class StatisticalBand(BaseModel):
     level_95: Band
     note:     str
 
+class HistoricalEvent(BaseModel):
+    date:       str
+    event:      str
+    move_pct:   float
+    confounded: bool
+
+class HistoricalContext(BaseModel):
+    """What Brent did after past events of this type. Descriptive, not a forecast."""
+    week:       int
+    n_events:   int
+    median_pct: float
+    low_pct:    float
+    high_pct:   float
+    price_low:  float
+    price_high: float
+    events:     list[HistoricalEvent]
+
 class ModelInfo(BaseModel):
     forecaster: str
     llm:        str
@@ -197,6 +224,9 @@ class ProbabilisticResponse(BaseModel):
     forecast_dates:         Optional[list[str]] = None
     statistical_band:       Optional[StatisticalBand] = None
     model_info:             Optional[ModelInfo] = None
+    # Added in v2.2: descriptive history per scenario (see reports/scenarios)
+    historical_context:     dict[str, HistoricalContext] = {}
+    historical_note:        str = ""
 
 
 def _model_info() -> ModelInfo:
@@ -219,7 +249,7 @@ def root():
     """Health check — confirms API is running."""
     return {
         "status":     "online",
-        "message":    "Oil Price Scenario Forecasting API v2.1",
+        "message":    "Oil Price Scenario Forecasting API v2.2",
         "docs":       "/docs",
         "model_info": _model_info().model_dump(),
     }
@@ -476,6 +506,8 @@ def run_probabilistic_simulation(request: ScenarioRequest):
             forecast_dates         = result["forecast_dates"],
             statistical_band       = statistical_band,
             model_info             = _model_info(),
+            historical_context     = result.get("historical_context", {}),
+            historical_note        = HISTORICAL_NOTE,
         )
 
     except ValueError as e:
