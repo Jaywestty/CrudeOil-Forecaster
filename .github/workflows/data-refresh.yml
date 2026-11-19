@@ -1,0 +1,70 @@
+name: Weekly data refresh
+
+# Fetch fresh data, validate it, run the promotion gate, and open a pull
+# request with the result. Nothing reaches main without a human merging the
+# PR; merging it triggers the Render redeploy, which retrains the model.
+
+on:
+  schedule:
+    # Thursdays 14:00 UTC: after EIA's Wednesday inventory release, and once
+    # FRED has published the previous week's Brent prices.
+    - cron: "0 14 * * 4"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write        # push the refresh branch
+  pull-requests: write   # open / update the review PR
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04   # pinned: "latest" moved to 26.04, which has no Python 3.11.8 build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch, validate, gate and promote
+        id: weekly
+        run: python -m pipeline.weekly
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}   # optional; falls back to EIA's public DEMO_KEY
+
+      - name: Keep the reports with the run
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: data-refresh-reports
+          path: |
+            reports/data/
+            data/staging/manifest.json
+          if-no-files-found: ignore
+
+      - name: Open or update the review pull request
+        if: steps.weekly.outputs.promoted == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automated/data-refresh
+          delete-branch: true
+          commit-message: "Promote data through ${{ steps.weekly.outputs.data_last }}"
+          title: "Data refresh: data through ${{ steps.weekly.outputs.data_last }}"
+          body-path: reports/data/promotion.md
+          add-paths: |
+            data/raw/*.csv
+            data/oil_macro_weekly.csv
+            data/oil_macro_transformed.csv
+            data/manifest.json
+            models/registry.json
+            reports/data/*.md
+          labels: automated, data-refresh

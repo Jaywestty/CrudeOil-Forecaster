@@ -1,33 +1,33 @@
-# Data diff: `data` → `data\staging`
+# Data diff: `C:\Users\Fadairo Oluwajuwon\Desktop\CrudeOil-Forecaster\data` → `C:\Users\Fadairo Oluwajuwon\Desktop\CrudeOil-Forecaster\data\staging`
 
 ## oil_macro_weekly.csv
 
-- Old: 1044 rows, 2006-01-08 → 2026-01-04
+- Old: 1089 rows, 2006-01-08 → 2026-11-15
 - New: 1089 rows, 2006-01-08 → 2026-11-15
-- Dates added: 45 (2026-01-11 → 2026-11-15)
+- Dates added: 0
 - Dates removed: 0
 
 | column | shared rows | rows changed | max abs change | first changed | last changed |
 |---|---|---|---|---|---|
-| brent | 1044 | 8 | 2.5500 | 2006-01-15 | 2026-01-04 |
-| inventories | 1044 | 1 | 3587.0000 | 2026-01-04 | 2026-01-04 |
-| industrial_prod | 1044 | 1044 | 16.8116 | 2006-01-08 | 2026-01-04 |
-| dollar_index | 1044 | 1 | 0.0010 | 2026-01-04 | 2026-01-04 |
-| fed_funds | 1044 | 736 | 1.3300 | 2006-01-08 | 2025-12-28 |
-| vix | 1044 | 1 | 0.0042 | 2026-01-04 | 2026-01-04 |
+| brent | 1089 | 0 | 0.0000 |  |  |
+| inventories | 1089 | 0 | 0.0000 |  |  |
+| industrial_prod | 1089 | 0 | 0.0000 |  |  |
+| dollar_index | 1089 | 0 | 0.0000 |  |  |
+| fed_funds | 1089 | 0 | 0.0000 |  |  |
+| vix | 1089 | 0 | 0.0000 |  |  |
 
 ## oil_macro_transformed.csv
 
-- Old: 1043 rows, 2006-01-15 → 2026-01-04
+- Old: 1088 rows, 2006-01-15 → 2026-11-15
 - New: 1088 rows, 2006-01-15 → 2026-11-15
-- Dates added: 45 (2026-01-11 → 2026-11-15)
+- Dates added: 0
 - Dates removed: 0
 
 | column | shared rows | rows changed | max abs change | first changed | last changed |
 |---|---|---|---|---|---|
-| brent_return | 1043 | 14 | 0.0410 | 2006-01-15 | 2026-01-04 |
-| dollar_return | 1043 | 1 | 0.0000 | 2026-01-04 | 2026-01-04 |
-| indpro_return | 1043 | 479 | 0.1414 | 2006-01-15 | 2025-12-21 |
-| inventory_pct | 1043 | 1 | 0.0043 | 2026-01-04 | 2026-01-04 |
-| fed_funds_diff | 1043 | 215 | 0.9600 | 2006-02-05 | 2026-01-04 |
-| vix_diff | 1043 | 1 | 0.0042 | 2026-01-04 | 2026-01-04 |
+| brent_return | 1088 | 0 | 0.0000 |  |  |
+| dollar_return | 1088 | 0 | 0.0000 |  |  |
+| indpro_return | 1088 | 0 | 0.0000 |  |  |
+| inventory_pct | 1088 | 0 | 0.0000 |  |  |
+| fed_funds_diff | 1088 | 0 | 0.0000 |  |  |
+| vix_diff | 1088 | 0 | 0.0000 |  |  |
