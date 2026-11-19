@@ -14,12 +14,12 @@ concurrency:
 jobs:
   tests:
     name: Tests (API, engine, evaluation, pipeline)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: "latest" moved to 26.04, which has no Python 3.11.8 build
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version-file: .python-version   # same Python as the Render deployment
           cache: pip
@@ -33,12 +33,12 @@ jobs:
 
   ui-smoke:
     name: Streamlit UI smoke test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # pinned: "latest" moved to 26.04, which has no Python 3.11.8 build
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version-file: .python-version
           cache: pip
