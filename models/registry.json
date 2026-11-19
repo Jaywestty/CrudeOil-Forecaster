@@ -1,0 +1,60 @@
+[
+  {
+    "version": "2026-11-15-37de0d09",
+    "promoted_at": "2026-11-19T01:22:14+00:00",
+    "previous_version": null,
+    "data": {
+      "recipe": "v2-release-aware",
+      "first": "2006-01-08",
+      "last": "2026-11-15",
+      "last_brent": 95.17,
+      "weekly_sha": "37de0d09fe239015",
+      "transformed_sha": "eb0ed461331fb486"
+    },
+    "model": {
+      "spec": "SARIMAX(1, 1, 1)(1, 0, 1, 52) with 5 macro drivers",
+      "converged": true,
+      "iterations": 33,
+      "aic": 5806.2,
+      "n_obs": 1088,
+      "params_finite": true
+    },
+    "gates": [
+      {
+        "name": "G1",
+        "check": "data",
+        "passed": true,
+        "detail": "validation passed; recipe v2-release-aware (matches)",
+        "overridden": false
+      },
+      {
+        "name": "G2",
+        "check": "continuity",
+        "passed": false,
+        "detail": "0 dates removed; largest revision industrial_prod: 1044/1044 rows (100.0%)",
+        "overridden": true
+      },
+      {
+        "name": "G3",
+        "check": "fit",
+        "passed": true,
+        "detail": "converged=True after 33 iterations, finite params=True, AIC 5806.2",
+        "overridden": false
+      },
+      {
+        "name": "G4",
+        "check": "sanity",
+        "passed": true,
+        "detail": "week-12 forecast $95.82 from last $95.17; 95% band $67.70-$123.94",
+        "overridden": false
+      }
+    ],
+    "override_reason": "Reviewed diff (reports/data/staged_vs_current.md): industrial production and fed funds change because production switched to the v2 release-aware recipe; other changes are FRED's 2006 Brent revisions and the old partial final week (2026-01-04) now complete.",
+    "monitoring": {
+      "weeks": 45,
+      "model_mae": 8.267,
+      "naive_mae": 8.293,
+      "mae_vs_naive": 0.997
+    }
+  }
+]
