@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from utils import load_data, load_transformed_data, load_model
 from utils import get_latest_values, format_price_change
+from scenario_library import HORIZON as EVENT_HORIZON, analogue_path, event_paths, load_events
 
 
 # ── Scenario Definitions ───────────────────────────────────────────
@@ -148,6 +149,7 @@ class ScenarioEngine:
             'vix_diff'
         ]
         self.model, self.forecast_origin = self._extend_to_latest(load_model())
+        self.event_paths = self._load_event_paths()
         self.latest      = get_latest_values(self.weekly_data, self.transformed)
         print("✅ Scenario Engine ready\n")
 
@@ -176,6 +178,62 @@ class ScenarioEngine:
             print(f"   Extending model state from {int(model.nobs)} to {len(y)} weeks (parameters unchanged)")
             model = model.apply(y, exog=X)
         return model, y.index[-1]
+
+
+    def _load_event_paths(self):
+        """
+        Brent moves after the historical events in data/scenario_events.csv.
+
+        Step 2a found these medians do NOT forecast better than the engine or a
+        no-change forecast (reports/scenarios/report.md), because events of the
+        same type had very different effects. They are therefore used only as
+        descriptive context — "what happened after similar events" — never to
+        set the scenario forecast itself.
+        """
+        if "brent" not in getattr(self.weekly_data, "columns", []):
+            return None
+        try:
+            paths = event_paths(self.weekly_data["brent"].dropna(), load_events(), EVENT_HORIZON)
+        except (OSError, ValueError) as e:
+            print(f"   Historical event context unavailable: {e}")
+            return None
+        # No measurable events (e.g. a short dataset) means no context, not a crash.
+        return None if paths.empty else paths
+
+
+    def historical_context(self, scenario_key, forecast_weeks=12):
+        """
+        Range of Brent moves after past events of this type, at the forecast horizon.
+
+        Returns None if no event data is available. Moves are % changes from the
+        last price before each event; ``price_low``/``price_high`` apply that
+        range to today's price for easy reading.
+        """
+        if self.event_paths is None or scenario_key not in set(self.event_paths["scenario"]):
+            return None
+        week = min(int(forecast_weeks), EVENT_HORIZON)
+        stats = analogue_path(self.event_paths, scenario_key, EVENT_HORIZON)
+        to_pct = lambda x: round(100 * (np.exp(x) - 1), 1)
+        price = float(self.latest["brent_price"])
+        g = self.event_paths[self.event_paths["scenario"] == scenario_key].sort_values("date")
+        return {
+            "week":        week,
+            "n_events":    int(stats["n_events"]),
+            "median_pct":  to_pct(stats["median"][week - 1]),
+            "low_pct":     to_pct(stats["low"][week - 1]),
+            "high_pct":    to_pct(stats["high"][week - 1]),
+            "price_low":   round(price * float(np.exp(stats["low"][week - 1])), 2),
+            "price_high":  round(price * float(np.exp(stats["high"][week - 1])), 2),
+            "events": [
+                {
+                    "date":       r.date.strftime("%Y-%m-%d"),
+                    "event":      r.event,
+                    "move_pct":   to_pct(getattr(r, f"w{week}")),
+                    "confounded": bool(r.confounded),
+                }
+                for r in g.itertuples(index=False)
+            ],
+        }
 
 
     def forecast_dates(self, forecast_weeks):
@@ -640,6 +698,10 @@ class ScenarioEngine:
             "baseline_band_80":       {"lower": ci80[:, 0], "upper": ci80[:, 1]},
             "baseline_band_95":       {"lower": ci95[:, 0], "upper": ci95[:, 1]},
             "forecast_dates":         self.forecast_dates(forecast_weeks),
+            "historical_context":     {
+                k: ctx for k in final_probs
+                if (ctx := self.historical_context(k, forecast_weeks)) is not None
+            },
             "adjusted_probabilities": adjusted_probs,
             "dropped_scenarios":      dropped,
             "weighted_forecast":      weighted_forecast,

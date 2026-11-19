@@ -265,7 +265,7 @@ class TestForecastOrigin:
         cols = ["dollar_return", "indpro_return", "inventory_pct", "fed_funds_diff", "vix_diff"]
         current = MagicMock()
         current.nobs = 10
-        monkeypatch.setattr(scenario_engine, "load_data", lambda: pd.DataFrame({"brent": range(10)}, index=idx))
+        monkeypatch.setattr(scenario_engine, "load_data", lambda: pd.DataFrame({"brent": range(60, 70)}, index=idx))
         monkeypatch.setattr(scenario_engine, "load_transformed_data", lambda: pd.DataFrame(0.0, index=idx, columns=cols))
         monkeypatch.setattr(scenario_engine, "load_model", lambda: current)
         monkeypatch.setattr(scenario_engine, "get_latest_values", lambda w, t: latest_values)
@@ -273,3 +273,60 @@ class TestForecastOrigin:
         engine = scenario_engine.ScenarioEngine()
         assert engine.model is current
         current.apply.assert_not_called()
+
+
+class TestHistoricalContext:
+
+    def _engine(self, monkeypatch, latest_values):
+        from unittest.mock import MagicMock
+        import scenario_engine
+
+        idx = pd.date_range("2020-01-05", periods=60, freq="W-SUN")
+        weekly = pd.DataFrame({"brent": [50.0] * 30 + [60.0] * 30}, index=idx)
+        events = pd.DataFrame({
+            "scenario": ["opec_cut", "opec_cut", "opec_cut"],
+            "date": pd.to_datetime(["2020-03-04", "2020-06-17", "2020-07-08"]),
+            "event": ["a", "b", "c"],
+            "why_it_qualifies": ["x"] * 3,
+            "confounded_by": ["", "", "covid"],
+        })
+        events["confounded"] = events["confounded_by"] != ""
+        model = MagicMock()
+        model.get_forecast.side_effect = lambda steps, exog: FakeForecastResult([80.0] * steps, _index(steps))
+        monkeypatch.setattr(scenario_engine, "load_data", lambda: weekly)
+        monkeypatch.setattr(scenario_engine, "load_transformed_data", lambda: pd.DataFrame())
+        monkeypatch.setattr(scenario_engine, "load_model", lambda: model)
+        monkeypatch.setattr(scenario_engine, "load_events", lambda: events)
+        monkeypatch.setattr(scenario_engine, "get_latest_values", lambda w, t: dict(latest_values, brent_price=100.0))
+        return scenario_engine.ScenarioEngine()
+
+    def test_context_summarises_past_events(self, monkeypatch, latest_values):
+        engine = self._engine(monkeypatch, latest_values)
+        ctx = engine.historical_context("opec_cut", 12)
+        # Event a (origin wk 8, price 50) ends at week 20: still 50 -> 0%.
+        # Events b and c start at 50 and cross into the 60 regime -> +20%.
+        assert ctx["n_events"] == 3 and ctx["week"] == 12
+        assert ctx["low_pct"] == 0.0 and ctx["high_pct"] == pytest.approx(20.0)
+        assert ctx["median_pct"] == pytest.approx(20.0)
+        assert ctx["price_low"] == 100.0 and ctx["price_high"] == pytest.approx(120.0)
+        assert [e["confounded"] for e in ctx["events"]] == [False, False, True]
+
+    def test_horizon_beyond_event_data_is_capped(self, monkeypatch, latest_values):
+        engine = self._engine(monkeypatch, latest_values)
+        assert engine.historical_context("opec_cut", 24)["week"] == 12
+
+    def test_unknown_scenario_has_no_context(self, monkeypatch, latest_values):
+        engine = self._engine(monkeypatch, latest_values)
+        assert engine.historical_context("demand_boom", 12) is None
+
+    def test_probabilistic_result_includes_context_for_used_scenarios(self, monkeypatch, latest_values):
+        engine = self._engine(monkeypatch, latest_values)
+        result = engine.run_probabilistic_scenario({"opec_cut": 0.5, "demand_boom": 0.5}, 12)
+        assert set(result["historical_context"]) == {"opec_cut"}
+
+    def test_missing_price_data_means_no_context(self, make_engine):
+        idx = _index()
+        engine, _ = make_engine([FakeForecastResult([80.0] * 12, idx), FakeForecastResult([85.0] * 12, idx)])
+        assert engine.event_paths is None
+        result = engine.run_probabilistic_scenario({"opec_cut": 1.0}, 12)
+        assert result["historical_context"] == {}

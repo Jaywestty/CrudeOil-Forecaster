@@ -460,6 +460,13 @@ class LLMExplainer:
         primary_prob   = result["scenario_probabilities"].get(primary, 0)
         scenario_names = result.get("scenario_names", {})
 
+        history_text = "\n".join(
+            f"  {scenario_names.get(k, k)}: after {c['n_events']} past events, "
+            f"week-{c['week']} moves ranged {c['low_pct']:+.1f}% to {c['high_pct']:+.1f}% "
+            f"(median {c['median_pct']:+.1f}%)"
+            for k, c in result.get("historical_context", {}).items()
+        ) or "  (not available)"
+
         # Build a readable text summary of the breakdown
         breakdown_text = "\n".join([
             f"  {scenario_names.get(k, k)}: {v*100:.0f}% weight "
@@ -483,12 +490,19 @@ class LLMExplainer:
 
             Macro signal adjustments that were applied:
             {json.dumps(result.get('macro_adjustments', {}), indent=2)}
+
+            Historical context (what Brent did after past events of each type; NOT a forecast):
+            {history_text}
         """
 
         system_prompt = """
             You are a senior energy economist explaining a probabilistic oil price forecast.
 
             CRITICAL RULES — read before writing a single word:
+
+            0. HISTORICAL CONTEXT IS NOT A FORECAST. You may mention the range of
+               past moves after similar events, framed as history ("after N similar
+               events, Brent moved between X% and Y%"), never as a prediction.
 
             1. ACCEPT THE MODEL NUMBERS AS GIVEN. Do not override them with
                economic theory. If the model shows a price DROP during a supply

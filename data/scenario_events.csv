@@ -1,0 +1,32 @@
+scenario,date,event,why_it_qualifies,confounded_by
+opec_cut,2008-10-24,OPEC emergency meeting cuts 1.5 mb/d,Coordinated supply cut (during the financial-crisis demand collapse),financial-crisis demand collapse
+opec_cut,2008-12-17,OPEC Oran meeting cuts 2.2 mb/d,Largest OPEC cut to that date (during the financial-crisis demand collapse),financial-crisis demand collapse
+opec_cut,2016-11-30,OPEC Vienna agreement to cut output,First OPEC cut since 2008,
+opec_cut,2018-12-07,OPEC+ agrees 1.2 mb/d cut,Coordinated OPEC+ supply cut,
+opec_cut,2020-04-12,OPEC+ agrees record 9.7 mb/d cut,Record coordinated cut (during the COVID demand collapse),COVID demand collapse
+opec_cut,2022-10-05,OPEC+ cuts targets by 2 mb/d,Coordinated OPEC+ supply cut,
+opec_cut,2023-04-02,Surprise voluntary OPEC+ cuts announced,Unexpected coordinated supply cut,
+opec_cut,2023-06-04,Saudi Arabia announces extra 1 mb/d voluntary cut,Unilateral supply cut by the swing producer,
+geopolitical_tension,2011-02-21,Libyan uprising disrupts exports,Supply disruption from conflict in a producer,
+geopolitical_tension,2012-01-23,EU agrees embargo on Iranian oil,Sanctions on a major exporter,
+geopolitical_tension,2014-06-10,ISIS captures Mosul,Conflict threatening Iraqi supply,
+geopolitical_tension,2019-09-14,Drone attack on Saudi Abqaiq facility,Largest single supply outage on record,
+geopolitical_tension,2020-01-03,US strike kills Iranian general Soleimani,Escalation risk in the Gulf,
+geopolitical_tension,2022-02-24,Russia invades Ukraine,War involving a top-3 producer,
+geopolitical_tension,2023-10-07,Hamas attack on Israel and ensuing war,Middle East conflict escalation risk,
+geopolitical_tension,2024-04-13,Iran launches drone and missile attack on Israel,Direct Iran–Israel escalation,
+geopolitical_tension,2025-06-13,Israel strikes Iran,Direct military conflict involving a major exporter,
+global_recession,2008-09-15,Lehman Brothers collapses,Onset of the global financial crisis,
+global_recession,2011-08-05,S&P downgrades US credit rating,Global growth scare,
+global_recession,2015-08-24,China-led global market sell-off,Global growth scare centred on China,
+global_recession,2020-03-11,WHO declares COVID-19 a pandemic,Global demand collapse,
+rate_hike,2015-12-16,Fed raises rates for the first time since 2006,Start of a tightening cycle,
+rate_hike,2018-12-19,Fed hikes despite market turmoil,Hawkish tightening into weakness,
+rate_hike,2022-03-16,Fed begins 2022 hiking cycle,Start of the fastest tightening cycle in decades,three weeks after Russia invaded Ukraine
+rate_hike,2022-06-15,Fed raises rates by 75 bp,Largest single hike since 1994,
+rate_hike,2022-09-21,Fed's third consecutive 75 bp hike,Aggressive tightening,
+rate_hike,2023-07-26,Fed hikes to a 22-year high,Peak of the tightening cycle,
+demand_boom,2012-09-13,Fed launches open-ended QE3,Large stimulus supporting demand expectations,
+demand_boom,2020-11-09,Pfizer announces effective COVID vaccine,Reopening demand expectations,
+demand_boom,2021-03-11,US $1.9 trillion stimulus signed into law,Large fiscal demand boost,
+demand_boom,2022-12-07,China eases zero-COVID restrictions,Reopening of the largest oil importer,

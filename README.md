@@ -273,6 +273,7 @@ crude-oil-forecaster/
 │                           # + macro probability adjustment
 ├── llm_explainer.py        # Groq (gpt-oss-120b) — parsing + explanation
 ├── utils.py                # Model loading, data helpers
+├── scenario_library.py     # Event study: Brent moves after past events of each type
 ├── train.py                # Fits the production model on all data (Render build)
 ├── streamlit_ui/
 │   ├── app_ui.py           # Streamlit frontend — probabilistic UI
@@ -282,12 +283,14 @@ crude-oil-forecaster/
 │
 ├── data/
 │   ├── oil_macro_weekly.csv        # Weekly data (2006 – Jan 2026)
-│   └── oil_macro_transformed.csv  # Stationary transformed features
+│   ├── oil_macro_transformed.csv  # Stationary transformed features
+│   └── scenario_events.csv        # 31 dated historical events per scenario type
 │
 ├── evaluation/             # Walk-forward backtest, challengers, conformal calibration
 ├── reports/
 │   ├── backtest/report.md     # Accuracy vs baselines, promotion decisions
-│   └── calibration/report.md  # Interval coverage and calibration
+│   ├── calibration/report.md  # Interval coverage and calibration
+│   └── scenarios/report.md    # Scenario calibration on historical events
 ├── tests/                  # pytest suite (API, engine, LLM, evaluation)
 │
 ├── requirements.txt        # Pinned dependencies (Python 3.11 stable)
@@ -391,6 +394,7 @@ streamlit run streamlit_ui/app_ui.py
 pytest
 python -m evaluation.run_backtest      # ~8 min  -> reports/backtest/report.md
 python -m evaluation.run_calibration   # ~4 min  -> reports/calibration/report.md
+python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
 ```
 
 ---
@@ -439,6 +443,29 @@ Statistical band (95%) coverage: ~85% at 1 week, ~92% at 4, ~97% at 12,
 inputs, which matches the forecasting literature. The app is therefore framed as a
 **scenario analysis** tool: compare what-ifs against the no-shock baseline, and
 read the statistical band as a typical-conditions range.
+
+### Scenario calibration on historical events
+
+Could scenarios be calibrated on what Brent actually did after real events, instead of
+hand-tuned macro shocks? [`reports/scenarios/report.md`](reports/scenarios/report.md) tests
+this on 31 dated events (OPEC cuts, geopolitical shocks, recessions, Fed hikes, demand
+surges), with the catalogue and decision rule fixed before any outcome was computed.
+
+```
+Leave-one-event-out, 12-week cumulative move (mean absolute error, log points)
+  Naive (no move)                        0.188
+  Current engine (SARIMAX shocks)        0.191
+  Historical median of other events      0.216   -> rule says keep the current engine
+
+12-week Brent moves after past events (median, range)
+  Geopolitical tension (9)   -0.3%   (-63% to +17%)
+  OPEC cut (8)               +8.3%   (-36% to +68%)
+  Global recession (4)      -15.3%   (-61% to  -4%)
+```
+
+Events with the same label had very different effects, so the median is a poor forecast.
+The app therefore shows this history as **context** ("after 9 similar events, Brent moved
+between -63% and +17% within 12 weeks"), never as the scenario forecast itself.
 
 ---
 
@@ -529,6 +556,12 @@ Scenario spread      lowest -> highest scenario price at the final week.
                      happens?" Close to nominal coverage on average, but too
                      narrow in crises (see Model Evaluation).
 ```
+
+### Historical context
+
+The Scenarios tab also shows what Brent did after past events of each type, one dot per
+event. This is history, not a forecast: it shows how wide real outcomes were, and the
+step-2a test found its median did not predict better than assuming no change.
 
 ### What the forecast range tells you
 
@@ -643,7 +676,9 @@ Current limitations:
   - 12-week forecast horizon — the range the backtests validated
   - Five fixed scenarios — cannot model novel events without mapping
     to one of the five (e.g. carbon taxes, SPR releases)
-  - Direction correction is a heuristic, not a structural fix
+  - Direction correction is a heuristic, not a structural fix. Replacing it with
+    event-calibrated paths was tested (step 2a) and did not forecast better, so it
+    stays, documented as a known limitation
 
 Natural next upgrades:
   - Duration profiles: short-war vs prolonged-war shock decay
