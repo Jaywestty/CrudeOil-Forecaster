@@ -138,8 +138,6 @@ class ScenarioEngine:
         print("⚙️  Initializing Scenario Engine...")
         self.weekly_data = load_data()
         self.transformed = load_transformed_data()
-        self.model       = load_model()
-        self.latest      = get_latest_values(self.weekly_data, self.transformed)
         # Columns the model expects as exogenous inputs
         # Must match exactly what we trained with
         self.exog_cols = [
@@ -149,7 +147,43 @@ class ScenarioEngine:
             'fed_funds_diff',
             'vix_diff'
         ]
+        self.model, self.forecast_origin = self._extend_to_latest(load_model())
+        self.latest      = get_latest_values(self.weekly_data, self.transformed)
         print("✅ Scenario Engine ready\n")
+
+
+    def _extend_to_latest(self, model):
+        """
+        Make the model forecast from the latest week in the dataset.
+
+        A fitted SARIMAX forecasts from the end of the data it was fitted on.
+        If the pickled model was fitted on fewer weeks than the dataset now
+        holds, its forecasts would start in the past (the original model
+        stopped in January 2022). ``apply`` re-runs the Kalman filter over the
+        full history with the same estimated parameters (no re-estimation),
+        so forecasts start from the latest observed price.
+
+        Returns (model, origin_date); origin_date is None if the data needed to
+        extend the model is unavailable.
+        """
+        w, t = self.weekly_data, self.transformed
+        if "brent" not in getattr(w, "columns", []) or not set(self.exog_cols) <= set(getattr(t, "columns", [])):
+            return model, None
+        common = w.index.intersection(t.index)
+        y = w.loc[common, "brent"]
+        X = t.loc[common, self.exog_cols]
+        if int(model.nobs) < len(y):
+            print(f"   Extending model state from {int(model.nobs)} to {len(y)} weeks (parameters unchanged)")
+            model = model.apply(y, exog=X)
+        return model, y.index[-1]
+
+
+    def forecast_dates(self, forecast_weeks):
+        """Calendar dates of each forecast week, or None if the origin is unknown."""
+        if self.forecast_origin is None:
+            return None
+        start = self.forecast_origin + pd.Timedelta(weeks=1)
+        return [d.strftime("%Y-%m-%d") for d in pd.date_range(start, periods=forecast_weeks, freq="7D")]
 
 
     def _build_exog_matrix(self, shocks, forecast_weeks):
@@ -187,13 +221,17 @@ class ScenarioEngine:
 
 
     # ─────────────────────────────────────────────────────────────────────
-    # ORIGINAL METHOD — baseline forecast
-    # Unchanged from your working version.
+    # Baseline forecast
     # ─────────────────────────────────────────────────────────────────────
 
     def run_baseline(self, forecast_weeks=12):
         """
         Generate a baseline forecast — no shocks, just current conditions.
+
+        Also returns the model's own 80% and 95% intervals. Step 1c of the
+        evaluation found these are the best-calibrated option at 4–12 weeks
+        on average, though they are too narrow in crises (see
+        reports/calibration/report.md).
 
         Returns:
             dict with forecast values and metadata
@@ -206,23 +244,25 @@ class ScenarioEngine:
             'type':          'baseline',
             'forecast_mean': forecast.predicted_mean,
             'conf_int':      forecast.conf_int(alpha=0.05),
+            'conf_int_80':   forecast.conf_int(alpha=0.20),
             'weeks':         forecast_weeks,
             'current_price': self.latest['brent_price']
         }
 
 
     # ─────────────────────────────────────────────────────────────────────
-    # ORIGINAL METHOD — single named scenario
-    # Unchanged from your working version. Used by /simulate endpoint.
+    # Single named scenario — used by /simulate and the probabilistic mode
     # ─────────────────────────────────────────────────────────────────────
 
-    def run_scenario(self, scenario_key, forecast_weeks=12):
+    def run_scenario(self, scenario_key, forecast_weeks=12, baseline_result=None):
         """
         Run a specific named scenario and compare to baseline.
 
         Args:
             scenario_key (str): key from SCENARIOS dict
             forecast_weeks (int): how many weeks ahead to forecast
+            baseline_result (dict, optional): a run_baseline() result to reuse,
+                so a multi-scenario run computes the baseline only once
 
         Returns:
             dict with baseline, shocked forecast, and impact analysis
@@ -246,7 +286,8 @@ class ScenarioEngine:
         print()
 
         # Baseline
-        baseline_result   = self.run_baseline(forecast_weeks)
+        if baseline_result is None:
+            baseline_result = self.run_baseline(forecast_weeks)
         baseline_forecast = baseline_result['forecast_mean']
 
         # Shocked forecast
@@ -368,8 +409,12 @@ class ScenarioEngine:
         probs       = probabilities.copy()
         adjustments = {}
 
-        # Read current macro conditions from our dataset
-        current_vix       = self.latest.get('vix_diff', 0)
+        # Read current macro conditions from our dataset.
+        # VIX thresholds (25 / 15) are LEVELS of the index, so compare them to
+        # the latest VIX level, not its weekly change ('vix_diff'). Comparing the
+        # change meant the "high fear" branch almost never fired and the
+        # "calm market" branch fired nearly every week.
+        current_vix       = self.latest.get('vix')
         current_dollar    = self.latest.get('dollar_return', 0)
         current_inventory = self.latest.get('inventory_pct', 0)
         current_fed       = self.latest.get('fed_funds_diff', 0)
@@ -377,7 +422,9 @@ class ScenarioEngine:
         # ── VIX signal ─────────────────────────────────────────────
         # VIX above 25 = elevated fear in the market.
         # Boost fear-driven scenarios (geopolitical, recession).
-        if current_vix > 25:
+        if current_vix is None:
+            pass  # no VIX level available: skip this signal rather than guess
+        elif current_vix > 25:
             if "geopolitical_tension" in probs:
                 probs["geopolitical_tension"] *= 1.30
                 adjustments["vix_high_geo"] = (
@@ -511,6 +558,17 @@ class ScenarioEngine:
         for k, v in adjusted_probs.items():
             print(f"     {k:<25} {v*100:.1f}%")
 
+        # Drop scenarios with negligible weight, then RENORMALISE the rest.
+        # Without renormalising, the weights used below would sum to less
+        # than 1 and the weighted forecast would be pulled towards $0.
+        kept = {k: p for k, p in adjusted_probs.items() if p >= 0.05}
+        if not kept:  # cannot happen with ≤5 scenarios, but never divide by zero
+            top = max(adjusted_probs, key=adjusted_probs.get)
+            kept = {top: adjusted_probs[top]}
+        dropped = {k: p for k, p in adjusted_probs.items() if k not in kept}
+        total = sum(kept.values())
+        final_probs = {k: round(p / total, 4) for k, p in kept.items()}
+
         # Step 2 — Run baseline once (same for all scenarios)
         baseline_result   = self.run_baseline(forecast_weeks)
         baseline_forecast = baseline_result['forecast_mean'].values
@@ -521,12 +579,8 @@ class ScenarioEngine:
         scenario_week12  = {}
         scenario_names   = {}
 
-        for key, prob in adjusted_probs.items():
-            # Skip scenarios with negligible weight — not worth computing
-            if prob < 0.05:
-                continue
-
-            result = self.run_scenario(key, forecast_weeks)
+        for key, prob in final_probs.items():
+            result = self.run_scenario(key, forecast_weeks, baseline_result=baseline_result)
 
             scenario_results[key] = {
                 "probability":   prob,
@@ -572,14 +626,22 @@ class ScenarioEngine:
             max(price_low, min(price_high, price_expected)), 2
         )
 
-        # Primary driver = scenario with the highest adjusted probability
-        primary_driver = max(adjusted_probs, key=adjusted_probs.get)
+        # Primary driver = scenario with the highest final probability
+        primary_driver = max(final_probs, key=final_probs.get)
 
-        print(f"   Expected Week-12 price: ${price_expected}")
+        print(f"   Expected Week-{forecast_weeks} price: ${price_expected}")
         print(f"   Range: ${price_low} – ${price_high}")
         print(f"   Primary driver: {primary_driver}")
 
+        ci80 = np.asarray(baseline_result["conf_int_80"])
+        ci95 = np.asarray(baseline_result["conf_int"])
+
         return {
+            "baseline_band_80":       {"lower": ci80[:, 0], "upper": ci80[:, 1]},
+            "baseline_band_95":       {"lower": ci95[:, 0], "upper": ci95[:, 1]},
+            "forecast_dates":         self.forecast_dates(forecast_weeks),
+            "adjusted_probabilities": adjusted_probs,
+            "dropped_scenarios":      dropped,
             "weighted_forecast":      weighted_forecast,
             "baseline_forecast":      baseline_forecast,
             "baseline_week12":        baseline_week12,
@@ -591,7 +653,7 @@ class ScenarioEngine:
             "price_high":             price_high,
             "primary_driver":         primary_driver,
             "current_price":          self.latest["brent_price"],
-            "scenario_probabilities": adjusted_probs,
+            "scenario_probabilities": final_probs,  # weights actually used (sum to 1)
             "original_probabilities": probabilities,
             "macro_adjustments":      macro_adjustments,
             "forecast_weeks":         forecast_weeks
