@@ -81,6 +81,11 @@ def run_backtest(
             if mean.shape != (h,) or not np.all(np.isfinite(mean)):
                 raise ValueError(f"{f.name} returned an invalid forecast at origin {dates[o].date()}")
             for k in range(1, h + 1):
+                extra = {}
+                for level, (lo, hi) in (fc.intervals or {}).items():
+                    tag = round(level * 100)
+                    extra[f"lo_{tag}"] = float(lo[k - 1])
+                    extra[f"hi_{tag}"] = float(hi[k - 1])
                 records.append(
                     {
                         "origin": dates[o],
@@ -94,6 +99,7 @@ def run_backtest(
                         "lower": np.nan if fc.lower is None else float(fc.lower[k - 1]),
                         "upper": np.nan if fc.upper is None else float(fc.upper[k - 1]),
                         "params_fitted_through": dates[last_fit],
+                        **extra,
                     }
                 )
         if progress:
