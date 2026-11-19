@@ -104,7 +104,7 @@ class TestMacroProbabilityAdjustment:
     def test_high_vix_boosts_fear_scenarios(self, make_engine):
         idx = _index()
         baseline = FakeForecastResult([80.0] * 12, idx)
-        engine, _ = make_engine([baseline], latest_overrides={"vix_diff": 30.0})
+        engine, _ = make_engine([baseline], latest_overrides={"vix": 30.0})
 
         probs = {"geopolitical_tension": 0.5, "global_recession": 0.3, "demand_boom": 0.2}
         adjusted, log = engine._adjust_probabilities_with_macro(probs)
@@ -117,7 +117,7 @@ class TestMacroProbabilityAdjustment:
     def test_low_vix_boosts_demand_boom(self, make_engine):
         idx = _index()
         baseline = FakeForecastResult([80.0] * 12, idx)
-        engine, _ = make_engine([baseline], latest_overrides={"vix_diff": 5.0})
+        engine, _ = make_engine([baseline], latest_overrides={"vix": 12.0})
 
         probs = {"demand_boom": 0.5, "opec_cut": 0.5}
         adjusted, log = engine._adjust_probabilities_with_macro(probs)
@@ -167,39 +167,109 @@ class TestMacroProbabilityAdjustment:
 
 class TestProbabilisticScenario:
 
-    def test_low_weight_scenarios_are_skipped(self, make_engine):
+    def test_low_weight_scenarios_are_skipped_and_weights_renormalised(self, make_engine):
         idx = _index()
-        # Sequence: 1 outer baseline call, then per surviving scenario
-        # (only geopolitical_tension clears 5%): 1 baseline + 1 shocked
-        outer_baseline = FakeForecastResult([80.0] * 12, idx)
-        scenario_baseline = FakeForecastResult([80.0] * 12, idx)
+        # The baseline is computed once and reused, so the sequence is:
+        # 1 baseline + 1 shocked forecast per surviving scenario.
+        baseline = FakeForecastResult([80.0] * 12, idx)
         shocked = FakeForecastResult([85.0] * 12, idx)
-
-        engine, fake_model = make_engine(
-            [outer_baseline, scenario_baseline, shocked]
-        )
+        engine, fake_model = make_engine([baseline, shocked])
 
         probs = {"geopolitical_tension": 0.97, "demand_boom": 0.03}
         result = engine.run_probabilistic_scenario(probs, forecast_weeks=12)
 
         assert "geopolitical_tension" in result["scenario_results"]
         assert "demand_boom" not in result["scenario_results"]
+        assert "demand_boom" in result["dropped_scenarios"]
+        assert result["scenario_probabilities"] == {"geopolitical_tension": 1.0}
+        # Renormalised weights: the expected path equals the only scenario's path,
+        # not 97% of it (which would wrongly pull the price towards $0).
+        assert result["weighted_forecast"][-1] == pytest.approx(85.0)
+        assert fake_model.get_forecast.call_count == 2
 
-    def test_expected_price_is_clamped_within_range(self, make_engine):
+    def test_baseline_is_computed_once_for_all_scenarios(self, make_engine):
         idx = _index()
-        # Sequence: 1 outer baseline, then 2 scenarios each contributing
-        # 1 baseline + 1 shocked call = 5 calls total.
-        outer_baseline = FakeForecastResult([80.0] * 12, idx)
-        geo_baseline = FakeForecastResult([80.0] * 12, idx)
+        baseline = FakeForecastResult([80.0] * 12, idx)
         geo_shocked = FakeForecastResult([90.0] * 12, idx)
-        rec_baseline = FakeForecastResult([80.0] * 12, idx)
         rec_shocked = FakeForecastResult([70.0] * 12, idx)
-
-        engine, _ = make_engine(
-            [outer_baseline, geo_baseline, geo_shocked, rec_baseline, rec_shocked]
-        )
+        engine, fake_model = make_engine([baseline, geo_shocked, rec_shocked])
 
         probs = {"geopolitical_tension": 0.5, "global_recession": 0.5}
         result = engine.run_probabilistic_scenario(probs, forecast_weeks=12)
 
+        assert fake_model.get_forecast.call_count == 3
+        assert result["scenario_week12"] == {"geopolitical_tension": 90.0, "global_recession": 70.0}
         assert result["price_low"] <= result["price_expected"] <= result["price_high"]
+        assert result["price_expected"] == pytest.approx(80.0)
+
+    def test_result_includes_baseline_bands_and_dates(self, make_engine):
+        idx = _index()
+        engine, _ = make_engine(
+            [FakeForecastResult([80.0] * 12, idx), FakeForecastResult([85.0] * 12, idx)]
+        )
+        result = engine.run_probabilistic_scenario({"opec_cut": 1.0}, forecast_weeks=12)
+        assert len(result["baseline_band_80"]["lower"]) == 12
+        assert len(result["baseline_band_95"]["upper"]) == 12
+        assert result["forecast_dates"] is None  # mocked data has no dates
+
+
+class TestVixUsesLevel:
+
+    def test_large_weekly_vix_change_alone_does_not_trigger_fear_rule(self, make_engine):
+        engine, _ = make_engine([], latest_overrides={"vix_diff": 30.0, "vix": 18.0})
+        probs = {"geopolitical_tension": 0.5, "demand_boom": 0.5}
+        _, log = engine._adjust_probabilities_with_macro(probs)
+        assert "vix_high_geo" not in log and "vix_low" not in log
+
+    def test_missing_vix_level_skips_signal(self, make_engine):
+        engine, _ = make_engine([], latest_overrides={"vix_diff": 30.0})
+        _, log = engine._adjust_probabilities_with_macro({"geopolitical_tension": 1.0})
+        assert not any(k.startswith("vix") for k in log)
+
+
+class TestForecastOrigin:
+
+    def test_model_is_extended_to_latest_week(self, monkeypatch, latest_values):
+        """A model fitted on fewer weeks must be re-filtered over the full dataset."""
+        from unittest.mock import MagicMock
+        import scenario_engine
+
+        idx = pd.date_range("2020-01-05", periods=10, freq="W-SUN")
+        weekly = pd.DataFrame({"brent": range(70, 80)}, index=idx)
+        cols = ["dollar_return", "indpro_return", "inventory_pct", "fed_funds_diff", "vix_diff"]
+        transformed = pd.DataFrame(0.0, index=idx, columns=cols)
+
+        stale = MagicMock()
+        stale.nobs = 8  # fitted on 8 of the 10 weeks
+        extended = MagicMock()
+        stale.apply.return_value = extended
+
+        monkeypatch.setattr(scenario_engine, "load_data", lambda: weekly)
+        monkeypatch.setattr(scenario_engine, "load_transformed_data", lambda: transformed)
+        monkeypatch.setattr(scenario_engine, "load_model", lambda: stale)
+        monkeypatch.setattr(scenario_engine, "get_latest_values", lambda w, t: latest_values)
+
+        engine = scenario_engine.ScenarioEngine()
+
+        assert engine.model is extended
+        y_arg = stale.apply.call_args.args[0]
+        assert len(y_arg) == 10
+        assert engine.forecast_origin == idx[-1]
+        assert engine.forecast_dates(2) == ["2020-03-15", "2020-03-22"]
+
+    def test_up_to_date_model_is_not_refiltered(self, monkeypatch, latest_values):
+        from unittest.mock import MagicMock
+        import scenario_engine
+
+        idx = pd.date_range("2020-01-05", periods=10, freq="W-SUN")
+        cols = ["dollar_return", "indpro_return", "inventory_pct", "fed_funds_diff", "vix_diff"]
+        current = MagicMock()
+        current.nobs = 10
+        monkeypatch.setattr(scenario_engine, "load_data", lambda: pd.DataFrame({"brent": range(10)}, index=idx))
+        monkeypatch.setattr(scenario_engine, "load_transformed_data", lambda: pd.DataFrame(0.0, index=idx, columns=cols))
+        monkeypatch.setattr(scenario_engine, "load_model", lambda: current)
+        monkeypatch.setattr(scenario_engine, "get_latest_values", lambda w, t: latest_values)
+
+        engine = scenario_engine.ScenarioEngine()
+        assert engine.model is current
+        current.apply.assert_not_called()
