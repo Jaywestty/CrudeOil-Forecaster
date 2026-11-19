@@ -1,0 +1,11 @@
+model,method,cells_calibrated_in_all_regimes,cells
+Naive,split conformal + vol-scaled,3,6
+Naive,adaptive conformal (ACI),2,6
+Naive,adaptive conformal (ACI) + vol-scaled,2,6
+SARIMA (no exog),adaptive conformal (ACI),2,6
+SARIMA (no exog),adaptive conformal (ACI) + vol-scaled,2,6
+SARIMA (no exog),split conformal + vol-scaled,2,6
+Naive,native (model's own),0,6
+Naive,split conformal,0,6
+SARIMA (no exog),native (model's own),0,6
+SARIMA (no exog),split conformal,0,6
