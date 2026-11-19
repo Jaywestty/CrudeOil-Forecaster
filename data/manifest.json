@@ -1,0 +1,65 @@
+{
+  "built_at": "2026-11-19T01:17:51+00:00",
+  "recipe": "v2-release-aware",
+  "release_lag_days": {
+    "industrial_prod": 45,
+    "fed_funds": 32
+  },
+  "end": "2026-11-19",
+  "sources": {
+    "brent": {
+      "source": "fred",
+      "series_id": "DCOILBRENTEU",
+      "raw_last_date": "2026-11-17",
+      "raw_sha256": "1b4a4bbe521ee589"
+    },
+    "inventories": {
+      "source": "eia",
+      "series_id": "WCRSTUS1",
+      "raw_last_date": "2026-11-13",
+      "raw_sha256": "7f18cd4f710819ea"
+    },
+    "industrial_prod": {
+      "source": "fred",
+      "series_id": "INDPRO",
+      "raw_last_date": "2026-10-01",
+      "raw_sha256": "2183feff40306790"
+    },
+    "dollar_index": {
+      "source": "fred",
+      "series_id": "DTWEXBGS",
+      "raw_last_date": "2026-11-13",
+      "raw_sha256": "70d199e483d2e432"
+    },
+    "fed_funds": {
+      "source": "fred",
+      "series_id": "FEDFUNDS",
+      "raw_last_date": "2026-10-01",
+      "raw_sha256": "abaf8aac94e837c8"
+    },
+    "vix": {
+      "source": "fred",
+      "series_id": "VIXCLS",
+      "raw_last_date": "2026-11-17",
+      "raw_sha256": "60c63ee7bc69a048"
+    }
+  },
+  "weekly": {
+    "rows": 1089,
+    "first": "2006-01-08",
+    "last": "2026-11-15",
+    "last_brent": 95.17,
+    "sha256": "37de0d09fe239015"
+  },
+  "transformed": {
+    "rows": 1088,
+    "sha256": "eb0ed461331fb486"
+  },
+  "validation": {
+    "ok": true,
+    "errors": [],
+    "warnings": [
+      "large weekly Brent move -0.35 log on 2020-03-15"
+    ]
+  }
+}
