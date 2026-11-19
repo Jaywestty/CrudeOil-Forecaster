@@ -45,6 +45,37 @@ def interval_coverage(y_true, lower, upper) -> float:
     return float(np.mean((y_true >= lower) & (y_true <= upper)))
 
 
+def interval_score(y_true, lower, upper, level: float) -> np.ndarray:
+    """Gneiting & Raftery (2007) interval score per observation; lower is better.
+
+    width + (2/α)·(how far the truth fell outside), with α = 1 - level.
+    It rewards narrow intervals but charges heavily for misses, so it cannot be
+    gamed by making intervals either very wide or very narrow.
+    """
+    y, lo, hi = (np.asarray(a, dtype=float) for a in (y_true, lower, upper))
+    a = 1 - level
+    return (hi - lo) + (2 / a) * (lo - y) * (y < lo) + (2 / a) * (y - hi) * (y > hi)
+
+
+def hac_mean_se(x, lags: int) -> float:
+    """Standard error of a sample mean with Newey–West (Bartlett) weights.
+
+    Hit/miss indicators from overlapping h-step forecasts are autocorrelated,
+    so the i.i.d. formula sqrt(p(1-p)/n) would make coverage look more
+    precisely estimated than it is.
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n < 2:
+        return float("nan")
+    xc = x - x.mean()
+    var = np.dot(xc, xc) / n
+    for k in range(1, min(lags, n - 1) + 1):
+        w = 1 - k / (lags + 1)
+        var += 2 * w * np.dot(xc[k:], xc[:-k]) / n
+    return float(np.sqrt(max(var, 0.0) / n))
+
+
 def diebold_mariano(e_model, e_bench, horizon: int, loss: str = "abs") -> tuple[float, float]:
     """Diebold-Mariano test with the Harvey-Leybourne-Newbold correction.
 
