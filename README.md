@@ -284,13 +284,17 @@ crude-oil-forecaster/
 ├── data/
 │   ├── oil_macro_weekly.csv        # Weekly data (2006 – Jan 2026)
 │   ├── oil_macro_transformed.csv  # Stationary transformed features
-│   └── scenario_events.csv        # 31 dated historical events per scenario type
+│   ├── scenario_events.csv        # 31 dated historical events per scenario type
+│   ├── raw/                       # Raw source snapshots (the pipeline's source of truth)
+│   └── staging/                   # Freshly built candidate dataset (not committed)
 │
+├── pipeline/               # Fetch raw data, build + validate the dataset, diff reports
 ├── evaluation/             # Walk-forward backtest, challengers, conformal calibration
 ├── reports/
 │   ├── backtest/report.md     # Accuracy vs baselines, promotion decisions
 │   ├── calibration/report.md  # Interval coverage and calibration
-│   └── scenarios/report.md    # Scenario calibration on historical events
+│   ├── scenarios/report.md    # Scenario calibration on historical events
+│   └── data/                  # Reproduction check and data diff reports
 ├── tests/                  # pytest suite (API, engine, LLM, evaluation)
 │
 ├── requirements.txt        # Pinned dependencies (Python 3.11 stable)
@@ -399,6 +403,64 @@ python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
 
 ---
 
+## 🔁 Data Pipeline
+
+The dataset was originally built by hand in a Colab notebook. It is now rebuilt by a
+tested pipeline:
+
+```
+python -m pipeline.refresh --fetch     # download raw series, build, validate -> data/staging/
+python -m pipeline.compare data data/staging --out reports/data/staged_vs_current.md
+python -m pipeline.promote             # dry run: refit on staged data and check the gates
+python -m pipeline.promote --apply     # promote data + model if every gate passes
+```
+
+- **Raw snapshots** (`data/raw/`) are the source of truth: builds read only these files, so
+  any dataset can be rebuilt offline exactly as it was.
+- **Validation** blocks structurally wrong or implausible data (gaps, missing values, unit
+  errors, inconsistent transforms) and flags unusual moves and stale data for review.
+- **Staging, not overwrite:** new data lands in `data/staging/` with a `manifest.json`
+  (sources, recipe, hashes, validation). Promoting it to `data/` is a separate decision,
+  because new data changes the model and every report.
+- **Reproducibility check:** rebuilding to 2025-12-31 matches the notebook's data exactly for
+  inventories, dollar, fed funds and VIX. The only differences are source revisions: recent
+  industrial production, and a few 2006 Brent days FRED no longer serves
+  ([`reports/data/reproduction.md`](reports/data/reproduction.md)).
+
+Recipes (`pipeline/build.py`): `v1-notebook` reproduces the original data, including its
+half-finished final week; `v1.1-complete-weeks` keeps only weeks that have ended;
+`v2-release-aware` (production) also moves monthly series to when they were actually
+published, so no backtest or model ever sees a figure before its release date.
+[`reports/data/recipe_comparison.md`](reports/data/recipe_comparison.md) measures the old
+leak: about 1% of error, but with honest timing the deployed SARIMAX setup becomes
+significantly worse than a no-change forecast at 12 weeks (Holm p = 0.038, vs 0.12 with the leak).
+
+### Promotion gate and model registry
+
+New data only goes live through `pipeline.promote`, which refits the model on the staged
+data and checks four gates, fixed before any result was seen:
+
+| Gate | Check |
+|---|---|
+| G1 data | Staged data passed validation and uses the production recipe |
+| G2 continuity | No dates removed; at most 5% of rows revised per column (more needs human review) |
+| G3 fit | The refit converged with finite parameters |
+| G4 sanity | The 12-week forecast and band are finite and within 0.5x–2x the last price |
+
+The gates catch breakage, not improvement: the model specification was already validated by
+the walk-forward backtests. Only G2 can be overridden, with a written reason; invalid data or
+a broken fit never goes live. Each promotion is appended to
+[`models/registry.json`](models/registry.json) with the data hashes, fit summary, gate results,
+any override reason and a pointer to the previous version (so it can be rolled back). The gate
+also reports how the current model did on the newly arrived weeks, against a no-change forecast.
+
+The first promotion (version `2026-11-15-37de0d09`) moved the live data from January 2026
+(Brent $61.35) to 15 November 2026 ($95.17), switching to the release-aware recipe with a
+reviewed G2 override. On the 45 new weeks the previous model's one-week error was $8.27 vs
+$8.29 for no-change: no edge, as the backtests predicted.
+
+---
+
 ## 📦 Data Sources
 
 | Variable | Source | Frequency | Description |
@@ -406,7 +468,7 @@ python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
 | Brent Crude Price | EIA / FRED | Weekly | USD per barrel |
 | US Dollar Index | FRED (DTWEXBGS) | Weekly | DXY trade-weighted index |
 | Industrial Production | FRED (INDPRO) | Monthly → Weekly | US manufacturing output |
-| Crude Inventories | EIA | Weekly | US commercial crude stocks |
+| Crude Inventories | EIA (WCRSTUS1) | Weekly | US crude ending stocks, including the SPR |
 | Federal Funds Rate | FRED (FEDFUNDS) | Monthly → Weekly | US benchmark interest rate |
 | VIX | FRED (VIXCLS) | Daily → Weekly | CBOE volatility / fear index |
 
@@ -415,7 +477,8 @@ python -m evaluation.run_scenario_study  # ~1 min -> reports/scenarios/report.md
 ## 🧪 Model Evaluation
 
 Every forecast below was made using only data available at the time (walk-forward,
-198 weekly origins from Jan 2022 to Oct 2025, parameters re-estimated yearly).
+198 weekly origins from Jan 2022 to Oct 2025, parameters re-estimated yearly). These reports
+were run on the original dataset (through Jan 2026); each records the data fingerprint it used.
 Full reports: [`reports/backtest/report.md`](reports/backtest/report.md) and
 [`reports/calibration/report.md`](reports/calibration/report.md).
 
@@ -672,7 +735,7 @@ Current limitations:
   - No model beats a no-change forecast for weekly prices (see Model Evaluation)
   - Macro relationships learned before 2022 largely broke afterwards
   - Statistical bands are too narrow during crises
-  - Data is a static snapshot (through Jan 2026); forecasts start from its last week
+  - Data refreshes are run by hand (fetch, review, promote); automation is the next step
   - 12-week forecast horizon — the range the backtests validated
   - Five fixed scenarios — cannot model novel events without mapping
     to one of the five (e.g. carbon taxes, SPR releases)

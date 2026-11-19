@@ -18,7 +18,7 @@ import pandas as pd
 
 from evaluation import metrics, report
 from evaluation.backtest import BacktestConfig, run_backtest
-from evaluation.data import data_fingerprint, load_dataset, train_size
+from evaluation.data import DATA_DIR, data_fingerprint, load_dataset, train_size
 from evaluation.forecasters import SeasonalNaive, _DirectMultiHorizon, default_forecasters
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -66,9 +66,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--step", type=int, default=1, help="weeks between forecast origins")
     parser.add_argument("--refit-every", type=int, default=52, help="weeks between refits; 0 = fit once")
     parser.add_argument("--out", type=Path, default=ROOT / "reports" / "backtest")
+    parser.add_argument("--data-dir", type=Path, default=None, help="dataset folder (default: data/)")
     args = parser.parse_args(argv)
 
-    y, X = load_dataset()
+    data_dir = args.data_dir or DATA_DIR
+    y, X = load_dataset(data_dir)
+    fingerprint = data_fingerprint(data_dir)  # at load time: files may change during a long run
     n_train = train_size(len(y))
     forecasters = default_forecasters()
     t0 = time.perf_counter()
@@ -107,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         "n_obs": len(y),
         "data_start": str(y.index[0].date()),
         "data_end": str(y.index[-1].date()),
-        "data_fingerprint": json.dumps(data_fingerprint()),
+        "data_fingerprint": json.dumps(fingerprint),
         "git_commit": _git_commit(),
         "n_origins": len(origins),
         "step": cfg.step,

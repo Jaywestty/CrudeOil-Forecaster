@@ -175,6 +175,7 @@ def main(argv=None) -> int:
     t0 = time.perf_counter()
 
     y, X = load_dataset()
+    fingerprint = data_fingerprint()  # at load time: files may change during a run
     events = load_events()
     paths = event_paths(y, events, HORIZON)
     model = None
@@ -226,7 +227,7 @@ def main(argv=None) -> int:
     )[["scenario", "date", "event", "origin", "origin_price", "wk4", "wk12", "confounded"]]
 
     meta = {"n_events": len(paths), "n_confounded": int(paths["confounded"].sum()),
-            "data_fingerprint": json.dumps(data_fingerprint()), "git_commit": _git_commit(),
+            "data_fingerprint": json.dumps(fingerprint), "git_commit": _git_commit(),
             "runtime_seconds": round(time.perf_counter() - t0, 1)}
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)

@@ -19,3 +19,4 @@ __pycache__/
 .pytest_cache/
 docs/learning/01-honest-evaluation.md
 .venv-ui/
+data/staging/
