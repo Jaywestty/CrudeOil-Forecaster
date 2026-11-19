@@ -124,7 +124,12 @@ def test_apply_promotes_data_model_and_registry_chain(dirs):
     assert reg[0]["data"]["last"] == str(dirs["w"].index[-1].date())
     assert all(g["passed"] for g in reg[0]["gates"])
 
-    # A second promotion links to the first, so the history is a chain you can roll back along.
+    # A second promotion (new data: a revised last price) links to the first,
+    # so the history is a chain you can roll back along.
+    from pipeline.build import build_transformed
+    w2 = dirs["w"].copy()
+    w2.iloc[-1, 0] += 1.0
+    _write_dir(dirs["staging"], w2, build_transformed(w2))
     assert _run(dirs, apply=True) == 0
     reg = json.loads((dirs["models"] / "registry.json").read_text(encoding="utf-8"))
     assert reg[1]["previous_version"] == reg[0]["version"]
@@ -167,3 +172,11 @@ def test_failure_while_preparing_leaves_live_files_untouched(dirs, monkeypatch):
         _run(dirs, apply=True, fit=lambda w, t: Unpicklable())
     assert (dirs["current"] / promote.WEEKLY).read_bytes() == before
     assert not (dirs["models"] / "registry.json").exists()
+
+
+def test_identical_staged_data_is_not_promoted_again(dirs):
+    for name in (promote.WEEKLY, promote.TRANSFORMED):
+        shutil.copyfile(dirs["staging"] / name, dirs["current"] / name)
+    assert not promote.has_new_data(dirs["current"], dirs["staging"])
+    assert _run(dirs, apply=True) == 0
+    assert not (dirs["models"] / "registry.json").exists()  # no duplicate entry
