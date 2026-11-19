@@ -63,7 +63,8 @@ def dirs(tmp_path):
 
 def _run(d, apply=False, overrides=(), reason=None, fit=lambda w, t: FakeResults()):
     return promote.run(d["current"], d["staging"], d["models"] / "model.pkl", d["models"] / "registry.json",
-                       d["report"], apply, list(overrides), reason, fit_fn=fit)
+                       d["report"], apply, list(overrides), reason, fit_fn=fit,
+                       serving_fn=lambda results, w, t: results)
 
 
 # ── Individual gates ───────────────────────────────────────────────
