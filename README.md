@@ -222,7 +222,7 @@ flowchart LR
 - **Registry:** [`models/registry.json`](models/registry.json) records data hashes, fit summary,
   gate results, any override and the previous version, so every forecast can be traced back.
 - **Automation:** `ci.yml` runs the tests, a UI dependency check and a Docker build on every
-  pull request and on `main`; when all pass on `main`, it triggers the Render deploy.
+  pull request and on `main`; Render deploys `main` once all of a commit's checks pass.
   `data-refresh.yml` runs every Thursday and opens a pull request when new data passes.
 
 ---
@@ -349,7 +349,7 @@ a safe default was used).
 
 | Part | Platform | Details |
 |---|---|---|
-| API | Render (free tier, 512 MB) | Build: `pip install -r requirements.txt && python train.py` · Start: `uvicorn app:app --host 0.0.0.0 --port $PORT` · Python 3.11.8 from `.python-version` · Deployed by CI (below) |
+| API | Render (free tier, 512 MB) | Build: `pip install -r requirements.txt && python train.py` · Start: `uvicorn app:app --host 0.0.0.0 --port $PORT` · Python 3.11.8 from `.python-version` · Auto-deploys after CI checks pass |
 | UI | Streamlit Community Cloud | Entry point `streamlit_ui/app_ui.py`; `API_URL` set as a secret |
 | Data | GitHub Actions | Weekly refresh opens a pull request; merging it redeploys the API |
 | Anywhere else | Docker | `docker build -t oil-api .` and run with `-e GROQ_API_KEY=...`; honours `$PORT` |
@@ -364,7 +364,6 @@ a safe default was used).
 | `CACHE_TTL_SECONDS`, `CACHE_MAX_ENTRIES` | Render (optional) | Response cache lifetime (default 6 h) and size (default 256) |
 | `LOG_LEVEL` | Render (optional) | Default `INFO` |
 | `EIA_API_KEY` | GitHub secret (required) | Inventories for the weekly refresh ([free key](https://www.eia.gov/opendata/register.php)) |
-| `RENDER_DEPLOY_HOOK_URL` | GitHub secret | Render's deploy hook; CI calls it after every check passes on `main` |
 
 **Updating dependencies:** edit `requirements.txt` (or `streamlit_ui/requirements.txt`), then
 regenerate the lock inside the production Python so versions and hashes match Linux:
@@ -373,12 +372,9 @@ regenerate the lock inside the production Python so versions and hashes match Li
 docker run --rm -v "$PWD:/src" -w /src python:3.11.8-slim sh -c   "pip install pip-tools==7.4.1 && pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt"
 ```
 
-**How deploys happen:** CI deploys the API only after the tests, UI check and Docker build all
-pass on `main`, by calling Render's deploy hook. One-time Render setup: copy the hook URL from
-the service's **Settings → Build & Deploy → Deploy Hook** into a GitHub secret named
-`RENDER_DEPLOY_HOOK_URL`, and set **Auto-Deploy** to **Off** so CI is the only trigger. (Render's
-own "after CI checks pass" option waits on *every* check on a commit, so a failed weekly data
-refresh blocked deploys of good code.)
+**How deploys happen:** Render's Auto-Deploy is set to deploy `main` after CI checks pass.
+Render waits for *every* check on the commit, so keep the weekly refresh's secrets in place: a
+failed refresh run on the latest `main` commit would also hold back its deploy.
 
 One-time setup for the weekly refresh: in the repository's **Settings → Actions → General**,
 allow GitHub Actions to create pull requests, and add `FRED_API_KEY` and `EIA_API_KEY` as
