@@ -3,7 +3,7 @@ name: CI
 # One job, one run per commit:
 #   - pull requests and pushes to main run the test suite and check the
 #     Streamlit UI's dependencies;
-#   - the weekly data refresh dispatches this workflow on its pull-request
+#   - the data refresh (every 3 weeks) dispatches this workflow on its pull-request
 #     branch after promoting new data, and there it also trains the model on
 #     that data and serves a simulation with it.
 # Render deploys main once a commit's checks pass.
