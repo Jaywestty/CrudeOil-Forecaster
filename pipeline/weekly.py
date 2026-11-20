@@ -56,7 +56,29 @@ def ensure_champion(model_path: Path = MODEL, data_dir: Path = DATA) -> None:
         pickle.dump(fitted, f)
 
 
+REQUIRED_SECRETS = {
+    "FRED_API_KEY": "free at https://fredaccount.stlouisfed.org/apikeys",
+    "EIA_API_KEY": "free at https://www.eia.gov/opendata/register.php",
+}
+
+
+def missing_secrets() -> list[str]:
+    """Keys the automated refresh needs. Keyless fallbacks (FRED's website CSV,
+    EIA's DEMO_KEY) work from a laptop but failed from GitHub's shared runners."""
+    return [k for k in REQUIRED_SECRETS if not os.getenv(k)]
+
+
 def main(argv=None) -> int:
+    missing = missing_secrets()
+    if missing and os.getenv("GITHUB_ACTIONS") == "true":
+        for k in missing:
+            print(f"Missing repository secret {k} ({REQUIRED_SECRETS[k]}). "
+                  "Add it under Settings -> Secrets and variables -> Actions.")
+        set_output(promoted="false", reason="missing-secrets")
+        return 1
+    for k in missing:
+        print(f"Note: {k} not set; using a keyless fallback that may be rate-limited.")
+
     rc = refresh.main(["--fetch", "--out", str(STAGING)])
     if rc != 0:
         set_output(promoted="false", reason="validation-failed")

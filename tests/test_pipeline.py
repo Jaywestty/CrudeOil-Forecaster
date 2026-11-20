@@ -302,3 +302,16 @@ def test_errors_never_contain_the_api_key(no_sleep, monkeypatch):
     with pytest.raises(RuntimeError) as timeout_err:
         sources.fetch_fred("DCOILBRENTEU", session)
     assert "super-secret-key" not in str(timeout_err.value) and "ReadTimeout" in str(timeout_err.value)
+
+
+def test_eia_demo_key_refusal_explains_how_to_fix(monkeypatch):
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="eia.gov/opendata/register"):
+        sources.fetch_eia("WCRSTUS1", CapturingSession(JsonResponse({}, status=403)))
+
+
+def test_eia_errors_with_a_real_key_are_not_misreported(monkeypatch):
+    monkeypatch.setenv("EIA_API_KEY", "real-key")
+    with pytest.raises(requests.HTTPError) as err:
+        sources.fetch_eia("WCRSTUS1", CapturingSession(JsonResponse({}, status=403)))
+    assert "real-key" not in str(err.value)

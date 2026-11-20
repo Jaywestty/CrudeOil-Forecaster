@@ -1,15 +1,22 @@
 name: CI
 
+# One run per commit: pull requests are tested on the PR event, and main on
+# push. (Triggering on every push AND every pull_request ran each check twice
+# for commits on a branch with an open PR.)
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; runs on main always finish, because Render
+  # deploys main once all of a commit's checks pass.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   tests:

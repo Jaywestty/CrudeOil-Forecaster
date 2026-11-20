@@ -25,6 +25,9 @@ def env(tmp_path, monkeypatch):
 
     out = tmp_path / "github_output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    # CI itself runs with GITHUB_ACTIONS=true, so pin the secret check's inputs.
+    monkeypatch.setenv("FRED_API_KEY", "test")
+    monkeypatch.setenv("EIA_API_KEY", "test")
     monkeypatch.setattr(weekly, "DATA", data)
     monkeypatch.setattr(weekly, "STAGING", staging)
     monkeypatch.setattr(weekly, "REPORTS", tmp_path / "reports")
@@ -75,3 +78,19 @@ def test_gate_failure_is_not_reported_as_promoted(env, monkeypatch):
 def test_set_output_is_a_noop_outside_github(monkeypatch):
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     weekly.set_output(promoted="true")  # must not raise
+
+
+def test_missing_secrets_fail_fast_on_github_actions(env, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("EIA_API_KEY")
+    monkeypatch.setattr(weekly.refresh, "main", lambda argv: pytest.fail("must not fetch without secrets"))
+    assert weekly.main() == 1
+    assert _outputs(env["out"])["reason"] == "missing-secrets"
+
+
+def test_missing_secrets_only_warn_locally(env, monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("EIA_API_KEY")
+    monkeypatch.setattr(weekly.promote, "main", lambda argv: pytest.fail("gate should not run"))
+    assert weekly.main() == 0  # proceeds with the keyless fallback; no new data in this fixture
+    assert "EIA_API_KEY not set" in capsys.readouterr().out
