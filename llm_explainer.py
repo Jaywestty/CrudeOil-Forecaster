@@ -2,6 +2,13 @@ import contextvars
 import os
 import json
 from groq import Groq, GroqError
+from groq import BadRequestError
+from pydantic import ValidationError
+
+from llm_schema import (
+    PARSER_VERSION, RESPONSE_FORMAT, SYSTEM_PROMPT_V2, UNINFORMATIVE_WEIGHTS,
+    ScenarioAssessment, primary_driver, user_message,
+)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -101,10 +108,11 @@ class LLMExplainer:
             )
         self.client = Groq(api_key=api_key)
         self.model  = LLM_MODEL
+        self.last_parse_error = None
         print(f"✅ LLM Explainer ready ({self.model})")
 
 
-    def _complete(self, messages, temperature, max_tokens):
+    def _complete(self, messages, temperature, max_tokens, response_format=None):
         """
         One chat completion, returning the visible answer text.
 
@@ -112,7 +120,9 @@ class LLMExplainer:
         ``include_reasoning=False`` keeps the model's reasoning out of the
         response. An empty answer raises, which sends every caller to its
         existing fallback instead of showing a blank explanation.
+        ``response_format`` requests structured (JSON Schema) output.
         """
+        extra = {"response_format": response_format} if response_format else {}
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -120,6 +130,7 @@ class LLMExplainer:
             max_completion_tokens=max_tokens + REASONING_HEADROOM,
             reasoning_effort=REASONING_EFFORT,
             include_reasoning=False,
+            **extra,
         )
         content = response.choices[0].message.content
         if not content or not content.strip():
@@ -257,114 +268,78 @@ class LLMExplainer:
 
     def parse_query_probabilistic(self, user_query):
         """
-        Parse natural language into probability weights across scenarios.
+        Turn a question into weights over the five scenarios (structured output).
 
-        Returns a dict with:
-        - probabilities: {scenario_key: float} summing to 1.0
-        - primary_driver: scenario with the highest weight
-        - reasoning: one sentence explaining the distribution
-        - scenario_context: user's query restated (for explanation step)
-        - specific_entity: country/org mentioned, or null
+        The model must return JSON matching llm_schema.JSON_SCHEMA. The result is
+        validated with Pydantic; invalid output gets one retry with the error
+        fed back. If Groq rejects the JSON Schema request itself, plain JSON mode
+        is used instead. Any remaining failure records a fallback and returns
+        equal weights, which carry no information (unlike a fixed scenario).
+
+        Returns a dict with: probabilities (sum to 1), primary_driver (computed
+        from the weights), in_scope, confidence, reasoning, scenario_context,
+        specific_entity, parser_version.
         """
-        system_prompt = """
-            You are a senior energy market analyst assigning scenario probabilities.
-
-            Given a user query about oil markets, distribute probability weights
-            across the most relevant scenarios. Weights must sum to exactly 1.0.
-            Only include scenarios with weight above 0.05 — omit irrelevant ones.
-
-            Available scenarios:
-            - opec_cut:             Supply cuts by OPEC or major producers
-            - global_recession:     Demand collapse from economic downturn
-            - rate_hike:            Central bank tightening, dollar strengthening
-            - geopolitical_tension: Conflict, sanctions, supply route disruption
-            - demand_boom:          Strong demand surge, industrial growth
-
-            Return ONLY valid JSON, no markdown, no explanation:
-            {
-              "probabilities": {
-                "scenario_key": probability_float
-              },
-              "primary_driver": "the scenario with highest weight",
-              "confidence": "high/medium/low",
-              "reasoning": "one sentence explaining the probability distribution",
-              "scenario_context": "restate what the user asked in 1 sentence",
-              "specific_entity": "country/org/event mentioned, or null"
-            }
-
-            Examples:
-            Query: "What if OPEC cuts and Middle East tensions also rise?"
-            → { "opec_cut": 0.55, "geopolitical_tension": 0.45 }
-
-            Query: "Global recession hits while the Fed keeps raising rates"
-            → { "global_recession": 0.60, "rate_hike": 0.40 }
-
-            Query: "China reopens and oil demand surges"
-            → { "demand_boom": 1.0 }
-
-            Query: "Saudi Arabia or any country increases oil output or production"
-            → This is a SUPPLY INCREASE — bearish for prices.
-               Map to: { "global_recession": 0.50, "rate_hike": 0.30, "opec_cut": 0.20 }
-               Reasoning: Supply glut suppresses prices similarly to demand collapse.
-               Do NOT map supply increases to demand_boom.
-
-            Query: "What if there is a ceasefire or peace deal?"
-            → This is a TENSION REDUCTION — map to demand_boom + opec_cut reversal:
-               { "demand_boom": 0.55, "rate_hike": 0.25, "global_recession": 0.20 }
-        """
-
-        try:
-            raw = self._complete(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": f"Query: {user_query}"}
-                ],
-                temperature=0.1,
-                max_tokens=400,
-            )
-
-            # Clean markdown fences if present
-            if "```" in raw:
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            raw = raw.strip()
-
-            parsed = json.loads(raw)
-
-            # Validate all scenario keys — remove any the LLM invented
-            probs = parsed.get("probabilities", {})
-            probs = {k: v for k, v in probs.items() if k in AVAILABLE_SCENARIOS}
-
-            # Fallback if nothing valid came back
-            if not probs:
-                probs = {"geopolitical_tension": 1.0}
-
-            # Normalize so probabilities ALWAYS sum to exactly 1.0
-            # This guards against the LLM returning 0.45 + 0.45 = 0.90
-            # or 0.60 + 0.60 = 1.20 etc.
-            total = sum(probs.values())
-            parsed["probabilities"] = {
-                k: round(v / total, 4) for k, v in probs.items()
-            }
-
-            # Ensure scenario_context always exists
-            if not parsed.get("scenario_context"):
-                parsed["scenario_context"] = user_query
-
-            return parsed
-
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError, GroqError):
-            _record_fallback("parse_probabilistic")
-            print("  Probabilistic parse failed -- using fallback")
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_V2},
+            {"role": "user", "content": user_message(user_query)},
+        ]
+        formats = [RESPONSE_FORMAT, {"type": "json_object"}]
+        last_error = None
+        for attempt in range(2):
+            try:
+                raw = self._complete(messages, temperature=0.1, max_tokens=400,
+                                     response_format=formats[0])
+            except BadRequestError as e:
+                # The structured-output request itself was refused: fall back to
+                # plain JSON mode (still validated below).
+                if len(formats) > 1:
+                    formats.pop(0)
+                    last_error = e
+                    continue
+                last_error = e
+                break
+            except (GroqError, ValueError) as e:
+                last_error = e
+                break
+            try:
+                assessment = ScenarioAssessment.model_validate_json(raw)
+            except ValidationError as e:
+                last_error = e
+                messages = messages + [
+                    {"role": "assistant", "content": raw[:2000]},
+                    {"role": "user", "content": "That reply did not match the required JSON schema "
+                                                f"({e.error_count()} errors). Reply again with valid JSON only."},
+                ]
+                continue
+            probabilities = assessment.probabilities()
+            self.last_parse_error = None
             return {
-                "probabilities":    {"geopolitical_tension": 1.0},
-                "primary_driver":   "geopolitical_tension",
-                "confidence":       "low",
-                "reasoning":        "Parse failed — using default",
-                "scenario_context": user_query,
-                "specific_entity":  None
+                "probabilities":    probabilities,
+                "primary_driver":   primary_driver(probabilities),
+                "in_scope":         assessment.in_scope,
+                "confidence":       assessment.confidence,
+                "reasoning":        assessment.reasoning,
+                "scenario_context": assessment.scenario_context,
+                "specific_entity":  assessment.specific_entity,
+                "parser_version":   PARSER_VERSION,
             }
+
+        _record_fallback("parse_probabilistic")
+        # Kept for diagnostics and the LLM evaluation (e.g. to tell rate limits
+        # apart from invalid output).
+        self.last_parse_error = type(last_error).__name__ if last_error else "unknown"
+        print(f"  Probabilistic parse failed ({self.last_parse_error}) -- using equal weights")
+        return {
+            "probabilities":    dict(UNINFORMATIVE_WEIGHTS),
+            "primary_driver":   primary_driver(UNINFORMATIVE_WEIGHTS),
+            "in_scope":         True,
+            "confidence":       "low",
+            "reasoning":        "The language model's answer was unavailable, so all scenarios are weighted equally.",
+            "scenario_context": user_query,
+            "specific_entity":  None,
+            "parser_version":   PARSER_VERSION,
+        }
 
 
     # ─────────────────────────────────────────────────────────────────────
