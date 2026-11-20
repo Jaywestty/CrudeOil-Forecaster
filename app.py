@@ -1,11 +1,33 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
-import traceback
+import logging
 import os
+import time
+from typing import Optional
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
+
+from llm_explainer import LLMExplainer, track_fallbacks
 from scenario_engine import ScenarioEngine, SCENARIOS
-from llm_explainer import LLMExplainer
+from serving.cache import TTLCache, make_key
+from serving.observability import (
+    REQUEST_ID_HEADER, Metrics, configure_logging, log_event, request_id_from,
+)
+
+# ── Limits ─────────────────────────────────────────────────────────
+# The backtests validated horizons up to 12 weeks, and every query costs
+# several LLM calls, so both are bounded at the edge of the API.
+MAX_WEEKS = 12
+MAX_QUERY_CHARS = 500
+STALE_DATA_DAYS = 21  # the weekly refresh should keep data younger than this
+
+log = configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+metrics = Metrics()
+response_cache = TTLCache(
+    maxsize=int(os.getenv("CACHE_MAX_ENTRIES", "256")),
+    ttl_seconds=float(os.getenv("CACHE_TTL_SECONDS", str(6 * 3600))),
+)
 
 
 # ── Live Brent Price from FRED ─────────────────────────────────────
@@ -47,13 +69,13 @@ def fetch_live_brent_price():
         price = round(float(series.iloc[-1]), 2)
         date  = series.index[-1].strftime("%Y-%m-%d")
 
-        print(f"✅ Live Brent price fetched: ${price} as of {date}")
+        log_event(log, "live price fetched", price=price, date=date)
         return price, date, "FRED live"
 
     except Exception as e:
         # Any failure — missing API key, network issue, FRED outage —
         # is handled silently. The caller decides the fallback.
-        print(f"  Live price fetch failed: {e}")
+        log_event(log, "live price unavailable", logging.WARNING, error=type(e).__name__)
         return None, None, "dataset"
 
 # ── App Initialization ─────────────────────────────────────────────
@@ -81,7 +103,7 @@ app = FastAPI(
     including this one, beats a no-change forecast for weekly Brent prices in
     2022–2025. Treat outputs as scenario analysis, not price prediction.
     """,
-    version="2.2.0"
+    version="2.3.0"
 )
 
 # Coverage of the statistical band, measured in the walk-forward backtests
@@ -105,22 +127,56 @@ HISTORICAL_NOTE = (
 )
 
 # ── CORS ───────────────────────────────────────────────────────────
-# Allow any domain to call this API.
-# Required because Streamlit Cloud (different domain) calls Render.
+# CORS only governs browsers calling the API directly. The Streamlit app calls
+# it server-to-server, so it is unaffected. Set ALLOWED_ORIGINS (comma
+# separated) to restrict browser access; the default keeps the API open.
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=_origins,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
+    expose_headers=[REQUEST_ID_HEADER],
 )
+
+
+# ── Request logging, request ids and metrics ──────────────────────
+@app.middleware("http")
+async def observe_requests(request: Request, call_next):
+    request_id = request_id_from(request.headers.get(REQUEST_ID_HEADER))
+    request.state.request_id = request_id
+    request.state.cache = None
+    start = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+    finally:
+        latency_ms = (time.perf_counter() - start) * 1000
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        metrics.observe(route_path, status, latency_ms)
+        log_event(log, "request", request_id=request_id, method=request.method, path=route_path,
+                  status=status, latency_ms=round(latency_ms, 1), cache=request.state.cache)
+    response.headers[REQUEST_ID_HEADER] = request_id
+    return response
+
+
+def _server_error(request: Request, exc: Exception) -> HTTPException:
+    """Log the full error; give the client a generic message and the request id."""
+    rid = getattr(request.state, "request_id", None)
+    log.error("simulation failed", exc_info=exc, extra={"fields": {"request_id": rid}})
+    return HTTPException(status_code=500,
+                         detail=f"Internal error while running the simulation (request id {rid}).")
 
 # ── Load Components Once at Startup ───────────────────────────────
 # Both are expensive to initialize. Loading once here means every
 # request reuses the same in-memory objects — no reload per request.
-print("🚀 Starting Oil Forecasting API...")
+log_event(log, "starting API")
 engine    = ScenarioEngine()
 explainer = LLMExplainer()
-print("✅ API ready\n")
+log_event(log, "API ready", llm=explainer.model,
+          data_as_of=None if engine.forecast_origin is None else str(engine.forecast_origin.date()))
 
 
 # ── Pydantic Models ────────────────────────────────────────────────
@@ -129,8 +185,16 @@ print("✅ API ready\n")
 
 class ScenarioRequest(BaseModel):
     """Shared request body for both /simulate endpoints."""
-    query:          str
-    forecast_weeks: Optional[int] = 12
+    query:          str = Field(min_length=3, max_length=MAX_QUERY_CHARS)
+    forecast_weeks: int = Field(12, ge=1, le=MAX_WEEKS)
+
+    @field_validator("query")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("query must contain at least 3 non-space characters")
+        return v
 
 class WeeklyForecast(BaseModel):
     week:     int
@@ -227,6 +291,8 @@ class ProbabilisticResponse(BaseModel):
     # Added in v2.2: descriptive history per scenario (see reports/scenarios)
     historical_context:     dict[str, HistoricalContext] = {}
     historical_note:        str = ""
+    # Added in v2.3: true when an LLM step failed and a safe fallback was used
+    llm_fallback:           bool = False
 
 
 def _model_info() -> ModelInfo:
@@ -249,7 +315,7 @@ def root():
     """Health check — confirms API is running."""
     return {
         "status":     "online",
-        "message":    "Oil Price Scenario Forecasting API v2.2",
+        "message":    "Oil Price Scenario Forecasting API v2.3",
         "docs":       "/docs",
         "model_info": _model_info().model_dump(),
     }
@@ -258,12 +324,34 @@ def root():
 @app.get("/health")
 def health():
     """
-    Dedicated health check for the keepalive worker.
-    Lightweight — just confirms the server is awake.
-    The keepalive background worker pings this every 280 seconds
-    to prevent Render's free tier from spinning the service down.
+    Readiness check, cheap enough for keep-alive pings.
+
+    Always returns HTTP 200 while the process can serve (so a keep-alive ping
+    never fails), with status "degraded" and warnings when something needs
+    attention, e.g. data older than the weekly refresh should allow.
     """
-    return {"status": "online"}
+    warnings = []
+    origin = engine.forecast_origin
+    age_days = None
+    if origin is None:
+        warnings.append("data date unknown")
+    else:
+        age_days = int((pd.Timestamp.now().normalize() - origin).days)
+        if age_days > STALE_DATA_DAYS:
+            warnings.append(f"data is {age_days} days old; the weekly refresh may have stopped")
+    return {
+        "status": "degraded" if warnings else "ok",
+        "model_loaded": engine.model is not None,
+        "data_as_of": None if origin is None else str(origin.date()),
+        "data_age_days": age_days,
+        "warnings": warnings,
+    }
+
+
+@app.get("/metrics")
+def get_metrics():
+    """Request counts, latency percentiles, cache and LLM-fallback statistics since start."""
+    return {**metrics.snapshot(), "cache": response_cache.stats(), "model_info": _model_info().model_dump()}
 
 
 @app.get("/scenarios")
@@ -322,7 +410,7 @@ def get_current_price():
 # ─────────────────────────────────────────────────────────────────────
 
 @app.post("/simulate", response_model=ScenarioResponse)
-def run_simulation(request: ScenarioRequest):
+def run_simulation(request: ScenarioRequest, http: Request):
     """
     Original single-scenario simulation endpoint.
 
@@ -353,7 +441,12 @@ def run_simulation(request: ScenarioRequest):
 
         scenario_key = parsed["scenario_key"]
         modifier     = parsed.get("magnitude_modifier", 1.0)
-        weeks        = parsed.get("forecast_weeks", request.forecast_weeks)
+        # The LLM may suggest a horizon; keep it inside the validated range.
+        try:
+            weeks = int(parsed.get("forecast_weeks", request.forecast_weeks))
+        except (TypeError, ValueError):
+            weeks = request.forecast_weeks
+        weeks = min(max(weeks, 1), MAX_WEEKS)
 
         # Step 2 — Scale shocks by magnitude modifier
         # e.g. modifier 2.0 doubles all shock values for "catastrophic" events
@@ -362,11 +455,9 @@ def run_simulation(request: ScenarioRequest):
             for k, v in SCENARIOS[scenario_key]["shocks"].items()
         }
 
-        # Temporarily override the scenario shocks, restore after run
-        original_shocks = SCENARIOS[scenario_key]["shocks"].copy()
-        SCENARIOS[scenario_key]["shocks"] = modified_shocks
-        result = engine.run_scenario(scenario_key, weeks)
-        SCENARIOS[scenario_key]["shocks"] = original_shocks
+        # Pass the scaled shocks in; never mutate the shared SCENARIOS table
+        # (unsafe with concurrent requests, and left corrupted on any error).
+        result = engine.run_scenario(scenario_key, weeks, shocks=modified_shocks)
 
         # Step 3 — Generate explanation and uncertainty note
         explanation = explainer.explain_results(result, parsed)
@@ -403,8 +494,7 @@ def run_simulation(request: ScenarioRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(http, e)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -413,7 +503,7 @@ def run_simulation(request: ScenarioRequest):
 # ─────────────────────────────────────────────────────────────────────
 
 @app.post("/simulate-probabilistic", response_model=ProbabilisticResponse)
-def run_probabilistic_simulation(request: ScenarioRequest):
+def run_probabilistic_simulation(request: ScenarioRequest, http: Request):
     """
     New probabilistic multi-scenario simulation endpoint.
 
@@ -431,6 +521,15 @@ def run_probabilistic_simulation(request: ScenarioRequest):
       Range:          $79 – $90
       Primary driver: Geopolitical Tension (45%)
     """
+    data_version = "none" if engine.forecast_origin is None else str(engine.forecast_origin.date())
+    key = make_key(request.query, request.forecast_weeks, data_version, explainer.model)
+    cached = response_cache.get(key)
+    if cached is not None:
+        http.state.cache = "hit"
+        return cached
+    http.state.cache = "miss"
+    fallbacks = track_fallbacks()
+
     try:
         # Step 1 — Parse query to probability distribution
         parsed = explainer.parse_query_probabilistic(request.query)
@@ -482,7 +581,7 @@ def run_probabilistic_simulation(request: ScenarioRequest):
             else primary_key
         )
 
-        return ProbabilisticResponse(
+        response = ProbabilisticResponse(
             price_expected         = result["price_expected"],
             price_low              = result["price_low"],
             price_high             = result["price_high"],
@@ -508,13 +607,21 @@ def run_probabilistic_simulation(request: ScenarioRequest):
             model_info             = _model_info(),
             historical_context     = result.get("historical_context", {}),
             historical_note        = HISTORICAL_NOTE,
+            llm_fallback           = bool(fallbacks),
         )
+        if fallbacks:
+            # Degraded answer: count it, and do not cache it, so a short LLM
+            # outage is not served from cache for hours afterwards.
+            metrics.record_fallbacks(fallbacks)
+            http.state.cache = "skip-degraded"
+        else:
+            response_cache.set(key, response)
+        return response
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error(http, e)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -523,7 +630,7 @@ def run_probabilistic_simulation(request: ScenarioRequest):
 # ─────────────────────────────────────────────────────────────────────
 
 @app.post("/simulate-direct")
-def run_direct_simulation(scenario_key: str, forecast_weeks: int = 12):
+def run_direct_simulation(scenario_key: str, forecast_weeks: int = Query(12, ge=1, le=MAX_WEEKS)):
     """
     Run a scenario directly by key — bypasses LLM parsing entirely.
     Useful for testing specific scenarios from the /docs page.

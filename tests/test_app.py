@@ -17,7 +17,9 @@ class TestHealthAndMeta:
         response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json() == {"status": "online"}
+        body = response.json()
+        assert body["status"] in ("ok", "degraded") and body["model_loaded"] is True
+        assert "warnings" in body and "data_age_days" in body
 
     def test_scenarios_lists_all_five(self, api_client):
         client, _, _ = api_client
@@ -138,7 +140,7 @@ class TestSimulateProbabilisticEndpoint:
         completion.choices = [choice]
         fake_groq_client.chat.completions.create.return_value = completion
 
-        body = client.post("/simulate-probabilistic", json={"query": "q", "forecast_weeks": 8}).json()
+        body = client.post("/simulate-probabilistic", json={"query": "test query", "forecast_weeks": 8}).json()
 
         assert len(body["scenario_breakdown"]["opec_cut"]["forecast"]) == 8
         assert len(body["statistical_band"]["level_95"]["lower"]) == 8
@@ -159,6 +161,6 @@ class TestRootModelInfo:
 
 def test_probabilistic_response_has_historical_fields(api_client):
     client, _, fake_groq_client = api_client
-    body = client.post("/simulate-probabilistic", json={"query": "q", "forecast_weeks": 12}).json()
+    body = client.post("/simulate-probabilistic", json={"query": "test query", "forecast_weeks": 12}).json()
     assert "historical_context" in body
     assert "not a forecast" in body["historical_note"]

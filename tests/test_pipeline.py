@@ -240,3 +240,65 @@ def test_partial_final_week_is_dropped_except_in_notebook_recipe():
     assert v1.index[-1] == pd.Timestamp("2024-03-17")   # notebook kept the half week
     assert v11.index[-1] == pd.Timestamp("2024-03-10")  # production keeps only ended weeks
     pd.testing.assert_frame_equal(v11, v1.iloc[:-1])
+
+
+# ── FRED official API (refresh run #1 timed out on the website CSV) ──
+
+
+class CapturingSession:
+    def __init__(self, response):
+        self.response, self.calls = response, []
+
+    def get(self, url, params=None, **kwargs):
+        self.calls.append((url, params, kwargs))
+        return self.response
+
+
+class JsonResponse(FakeResponse):
+    def __init__(self, payload, status=200):
+        super().__init__(status)
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_parse_fred_api_json_drops_missing_and_reports_errors():
+    payload = {"observations": [{"date": "2024-01-02", "value": "77.0"},
+                                {"date": "2024-01-03", "value": "."},
+                                {"date": "2024-01-04", "value": "78.5"}]}
+    s = sources.parse_fred_api_json(payload, "DCOILBRENTEU")
+    assert list(s.values) == [77.0, 78.5]
+    with pytest.raises(ValueError, match="Bad Request"):
+        sources.parse_fred_api_json({"error_message": "Bad Request. Variable api_key is not set."}, "X")
+
+
+def test_fetch_fred_uses_official_api_when_key_is_set(monkeypatch):
+    monkeypatch.setenv("FRED_API_KEY", "k123")
+    session = CapturingSession(JsonResponse({"observations": [{"date": "2024-01-02", "value": "77.0"}]}))
+    s = sources.fetch_fred("DCOILBRENTEU", session)
+    url, params, kwargs = session.calls[0]
+    assert url == sources.FRED_API
+    assert params == {"series_id": "DCOILBRENTEU", "api_key": "k123", "file_type": "json"}
+    assert kwargs["timeout"] == (10, 60)
+    assert s.iloc[0] == 77.0 and sources.fred_source() == "FRED API"
+
+
+def test_fetch_fred_falls_back_to_csv_without_key(monkeypatch):
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    session = CapturingSession(FakeResponse(200, text="observation_date,INDPRO\n2024-01-01,102.5\n"))
+    s = sources.fetch_fred("INDPRO", session)
+    assert session.calls[0][0] == sources.FRED_CSV and s.iloc[0] == 102.5
+    assert "no FRED_API_KEY" in sources.fred_source()
+
+
+def test_errors_never_contain_the_api_key(no_sleep, monkeypatch):
+    monkeypatch.setenv("FRED_API_KEY", "super-secret-key")
+    with pytest.raises(requests.HTTPError) as client_err:
+        sources.fetch_fred("DCOILBRENTEU", CapturingSession(JsonResponse({}, status=400)))
+    assert "super-secret-key" not in str(client_err.value)
+
+    session = FakeSession([requests.ReadTimeout("Read timed out for url ...?api_key=super-secret-key")] * sources.RETRIES)
+    with pytest.raises(RuntimeError) as timeout_err:
+        sources.fetch_fred("DCOILBRENTEU", session)
+    assert "super-secret-key" not in str(timeout_err.value) and "ReadTimeout" in str(timeout_err.value)

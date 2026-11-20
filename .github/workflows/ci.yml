@@ -23,10 +23,10 @@ jobs:
         with:
           python-version-file: .python-version   # same Python as the Render deployment
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements.lock
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock   # exact versions that ship
 
       - name: Run tests
         run: python -m pytest -q
@@ -42,10 +42,10 @@ jobs:
         with:
           python-version-file: .python-version
           cache: pip
-          cache-dependency-path: streamlit_ui/requirements.txt
+          cache-dependency-path: streamlit_ui/requirements.lock
 
-      - name: Install UI dependencies (isolated from the API's)
-        run: pip install -r streamlit_ui/requirements.txt
+      - name: Install UI dependencies from the hash lock (isolated from the API's)
+        run: pip install --require-hashes -r streamlit_ui/requirements.lock
 
       - name: Check dependencies resolve and the app compiles
         # Catches version conflicts like pyarrow requiring a newer NumPy than
@@ -54,3 +54,35 @@ jobs:
           pip check
           python -m py_compile streamlit_ui/app_ui.py
           python -c "import pandas, pyarrow, streamlit, plotly; pyarrow.Table.from_pandas(pandas.DataFrame({'a': [1.0]})); print('UI imports OK')"
+
+  docker:
+    name: Docker image builds and serves
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the API image (installs from the hash lock, trains the model)
+        run: docker build -t oil-forecaster-api .
+
+      - name: Start a container and wait for its health check
+        run: |
+          docker run -d --name api -p 8000:8000 -e GROQ_API_KEY=ci-placeholder oil-forecaster-api
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' api)
+            echo "health: $status"
+            [ "$status" = "healthy" ] && break
+            [ "$status" = "unhealthy" ] && { docker logs api; exit 1; }
+            sleep 5
+          done
+          [ "$status" = "healthy" ] || { docker logs api; exit 1; }
+
+      - name: Serve a simulation (no LLM needed)
+        run: |
+          curl -fsS http://localhost:8000/health
+          curl -fsS -X POST "http://localhost:8000/simulate-direct?scenario_key=opec_cut&forecast_weeks=12" | tee out.json
+          python3 -c "import json; d = json.load(open('out.json')); assert d['scenario_mean'] > 0, d; print('simulation OK')"
+
+      - name: Container logs
+        if: always()
+        run: docker logs api || true
