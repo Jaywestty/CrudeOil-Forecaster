@@ -1,8 +1,12 @@
 name: CI
 
-# One run per commit: pull requests are tested on the PR event, and main on
-# push. (Triggering on every push AND every pull_request ran each check twice
-# for commits on a branch with an open PR.)
+# One job, one run per commit:
+#   - pull requests and pushes to main run the test suite and check the
+#     Streamlit UI's dependencies;
+#   - the weekly data refresh dispatches this workflow on its pull-request
+#     branch after promoting new data, and there it also trains the model on
+#     that data and serves a simulation with it.
+# Render deploys main once a commit's checks pass.
 on:
   push:
     branches: [main]
@@ -18,11 +22,14 @@ concurrency:
   # deploys main once all of a commit's checks pass.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  REFRESH_BRANCH: automated/data-refresh
+
 jobs:
   tests:
-    name: Tests (API, engine, evaluation, pipeline)
+    name: Tests
     runs-on: ubuntu-24.04   # pinned: "latest" moved to 26.04, which has no Python 3.11.8 build
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -30,66 +37,45 @@ jobs:
         with:
           python-version-file: .python-version   # same Python as the Render deployment
           cache: pip
-          cache-dependency-path: requirements.lock
+          cache-dependency-path: |
+            requirements.lock
+            streamlit_ui/requirements.lock
 
       - name: Install dependencies
         run: pip install --require-hashes -r requirements.lock   # exact versions that ship
 
-      - name: Run tests
+      - name: Run the test suite
         run: python -m pytest -q
 
-  ui-smoke:
-    name: Streamlit UI smoke test
-    runs-on: ubuntu-24.04   # pinned: "latest" moved to 26.04, which has no Python 3.11.8 build
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version-file: .python-version
-          cache: pip
-          cache-dependency-path: streamlit_ui/requirements.lock
-
-      - name: Install UI dependencies from the hash lock (isolated from the API's)
-        run: pip install --require-hashes -r streamlit_ui/requirements.lock
-
-      - name: Check dependencies resolve and the app compiles
-        # Catches version conflicts like pyarrow requiring a newer NumPy than
-        # pandas allows, which only failed at runtime when a table rendered.
+      - name: Check the Streamlit UI's dependencies
+        # Streamlit Cloud installs streamlit_ui/requirements.txt on its own. This
+        # catches conflicts there (e.g. pyarrow needing a newer NumPy than pandas
+        # allows), which otherwise only fail at runtime when a table renders.
         run: |
-          pip check
-          python -m py_compile streamlit_ui/app_ui.py
-          python -c "import pandas, pyarrow, streamlit, plotly; pyarrow.Table.from_pandas(pandas.DataFrame({'a': [1.0]})); print('UI imports OK')"
+          python -m venv /tmp/ui
+          /tmp/ui/bin/pip install -q --require-hashes -r streamlit_ui/requirements.lock
+          /tmp/ui/bin/pip check
+          /tmp/ui/bin/python -m py_compile streamlit_ui/app_ui.py
+          /tmp/ui/bin/python -c "import pandas, pyarrow, streamlit, plotly; pyarrow.Table.from_pandas(pandas.DataFrame({'a': [1.0]})); print('UI dependencies OK')"
 
-  docker:
-    name: Docker image builds and serves
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Build the API image (installs from the hash lock, trains the model)
-        run: docker build -t oil-forecaster-api .
-
-      - name: Start a container and wait for its health check
+      - name: Train the model on the promoted data and serve a simulation
+        # Only on the data-refresh branch: this is the model Render will build
+        # when the refresh pull request is merged.
+        if: github.ref_name == env.REFRESH_BRANCH
+        env:
+          GROQ_API_KEY: ci-placeholder   # the LLM is not needed for /simulate-direct
         run: |
-          docker run -d --name api -p 8000:8000 -e GROQ_API_KEY=ci-placeholder oil-forecaster-api
-          for i in $(seq 1 30); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' api)
-            echo "health: $status"
-            [ "$status" = "healthy" ] && break
-            [ "$status" = "unhealthy" ] && { docker logs api; exit 1; }
-            sleep 5
-          done
-          [ "$status" = "healthy" ] || { docker logs api; exit 1; }
-
-      - name: Serve a simulation (no LLM needed)
-        run: |
-          curl -fsS http://localhost:8000/health
-          curl -fsS -X POST "http://localhost:8000/simulate-direct?scenario_key=opec_cut&forecast_weeks=12" | tee out.json
-          python3 -c "import json; d = json.load(open('out.json')); assert d['scenario_mean'] > 0, d; print('simulation OK')"
-
-      - name: Container logs
-        if: always()
-        run: docker logs api || true
+          python train.py
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          import app
+          client = TestClient(app.app)
+          health = client.get("/health").json()
+          print("health:", health)
+          assert health["model_loaded"], health
+          r = client.post("/simulate-direct?scenario_key=opec_cut&forecast_weeks=12")
+          assert r.status_code == 200, r.text
+          body = r.json()
+          assert body["scenario_mean"] > 0, body
+          print("simulation OK:", body["impact_week12"]["formatted"], "from", body["current_price"])
+          PY

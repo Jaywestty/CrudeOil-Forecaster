@@ -81,8 +81,8 @@ happened historically after similar events, clearly labelled as history rather t
 - **A reproducible data pipeline.** Raw-data snapshots, pure build functions, validation, a
   promotion gate with recorded human overrides, and a model registry with lineage and
   rollback ([pipeline/](pipeline)).
-- **Reproducible deployment.** Docker images for the API and UI built from hash-locked
-  dependencies, non-root, with health checks; CI builds the image and serves a simulation.
+- **Reproducible installs.** Hash-locked dependencies for the API and UI, installed by CI so
+  tests run against exactly the versions that ship.
 - **Automation with a human in the loop.** CI on every push, and a weekly job that fetches
   new data, runs the gate and opens a pull request for review ([workflows](.github/workflows)).
 - **A production LLM integration.** `gpt-oss-120b` on Groq, with token budgeting for a
@@ -95,7 +95,7 @@ happened historically after similar events, clearly labelled as history rather t
 - **160 automated tests** covering the API, engine, LLM layer, evaluation and pipeline.
 
 **Tech stack:** Python 3.11 · statsmodels (SARIMAX) · scikit-learn · pandas · FastAPI ·
-Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · Docker · GitHub Actions · Render.
+Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · GitHub Actions · Render.
 
 ---
 
@@ -221,27 +221,14 @@ flowchart LR
   atomically, and identical data is never promoted twice.
 - **Registry:** [`models/registry.json`](models/registry.json) records data hashes, fit summary,
   gate results, any override and the previous version, so every forecast can be traced back.
-- **Automation:** `ci.yml` runs the tests, a UI dependency check and a Docker build on every
-  pull request and on `main`; Render deploys `main` once all of a commit's checks pass.
-  `data-refresh.yml` runs every Thursday and opens a pull request when new data passes.
+- **Automation:** one CI job runs the tests and a UI dependency check on every pull request and
+  on `main`. The weekly refresh opens a pull request only when a new model is promoted, then runs
+  CI on it, including training the model on the new data. A person merges; Render deploys
+  `main` once its checks pass.
 
 ---
 
 ## Run it yourself
-
-### Option A: Docker (one command)
-
-```bash
-git clone https://github.com/Jaywestty/CrudeOil-Forecaster.git
-cd CrudeOil-Forecaster
-echo "GROQ_API_KEY=your_key" > .env
-docker compose up --build        # API: http://localhost:8000/docs   UI: http://localhost:8501
-```
-
-Both images install from hash-locked dependencies, run as a non-root user and have health
-checks; the API image trains its model at build time, so containers start in seconds.
-
-### Option B: Python
 
 **Prerequisites:** Python 3.11 and a free [Groq API key](https://console.groq.com). A
 [FRED API key](https://fredaccount.stlouisfed.org) is optional (used only for the live price
@@ -337,8 +324,6 @@ a safe default was used).
 ├── reports/                Generated evaluation and data reports
 ├── serving/                Response cache, JSON logging, request ids, metrics
 ├── tests/                  160 tests
-├── Dockerfile              API image (streamlit_ui/Dockerfile for the UI)
-├── docker-compose.yml      API + UI together
 ├── requirements.lock       Every dependency pinned with hashes (streamlit_ui/ has its own)
 └── .github/workflows/      CI and the weekly data refresh
 ```
@@ -352,7 +337,6 @@ a safe default was used).
 | API | Render (free tier, 512 MB) | Build: `pip install -r requirements.txt && python train.py` · Start: `uvicorn app:app --host 0.0.0.0 --port $PORT` · Python 3.11.8 from `.python-version` · Auto-deploys after CI checks pass |
 | UI | Streamlit Community Cloud | Entry point `streamlit_ui/app_ui.py`; `API_URL` set as a secret |
 | Data | GitHub Actions | Weekly refresh opens a pull request; merging it redeploys the API |
-| Anywhere else | Docker | `docker build -t oil-api .` and run with `-e GROQ_API_KEY=...`; honours `$PORT` |
 
 | Variable | Where | Purpose |
 |---|---|---|
@@ -366,18 +350,28 @@ a safe default was used).
 | `EIA_API_KEY` | GitHub secret (required) | Inventories for the weekly refresh ([free key](https://www.eia.gov/opendata/register.php)) |
 
 **Updating dependencies:** edit `requirements.txt` (or `streamlit_ui/requirements.txt`), then
-regenerate the lock inside the production Python so versions and hashes match Linux:
+regenerate the lock on Linux with Python 3.11 (e.g. the repository's dev container or a
+Codespace), so versions and hashes match production:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src python:3.11.8-slim sh -c   "pip install pip-tools==7.4.1 && pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt"
+pip install pip-tools==7.4.1
+pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt
 ```
 
-**How deploys happen:** Render's Auto-Deploy is set to deploy `main` after CI checks pass.
-Render waits for *every* check on the commit, so keep the weekly refresh's secrets in place: a
-failed refresh run on the latest `main` commit would also hold back its deploy.
+**How deploys happen:** Render's Auto-Deploy deploys `main` after CI checks pass.
 
-One-time setup for the weekly refresh: in the repository's **Settings → Actions → General**,
-allow GitHub Actions to create pull requests, and add `FRED_API_KEY` and `EIA_API_KEY` as
+| Step | What happens |
+|---|---|
+| 1. Weekly refresh (Thursday, or *Run workflow*) | Fetches data, validates, runs the gate. Nothing new or nothing promoted: stops, no PR, no CI. |
+| 2. Pull request | If a model is promoted, a PR with the new data opens and CI runs on it: tests, UI dependency check, and training the model on the new data. |
+| 3. Review and merge | Check the PR's results and promotion report, then merge. |
+| 4. Deploy | CI runs on `main`; when it passes, Render deploys and retrains on the new data. |
+
+Render waits for *every* check on a commit, so avoid running the refresh by hand on a `main`
+commit whose CI is still running: if that refresh failed, it would hold back the deploy.
+
+One-time setup for the weekly refresh: in the repository's **Settings → Actions → General →
+Workflow permissions**, tick "Allow GitHub Actions to create and approve pull requests", and add `FRED_API_KEY` and `EIA_API_KEY` as
 repository secrets (both free). Keyless public access works locally but was refused from
 GitHub's shared runners. Never commit `.env`; it is git-ignored.
 

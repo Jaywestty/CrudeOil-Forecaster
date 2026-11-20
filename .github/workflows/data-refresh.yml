@@ -1,8 +1,12 @@
 name: Weekly data refresh
 
-# Fetch fresh data, validate it, run the promotion gate, and open a pull
-# request with the result. Nothing reaches main without a human merging the
-# PR; merging it triggers the Render redeploy, which retrains the model.
+# Fetch fresh data, validate it and run the promotion gate. If a new model is
+# promoted: open (or update) a pull request with the data, then run CI on that
+# pull request so its checks test the new data and model. If nothing is
+# promoted: no pull request and no CI run.
+#
+# Flow: refresh -> PR with passing checks -> a person merges -> CI on main ->
+# Render deploys main after its checks pass (and retrains on the new data).
 
 on:
   schedule:
@@ -14,10 +18,14 @@ on:
 permissions:
   contents: write        # push the refresh branch
   pull-requests: write   # open / update the review PR
+  actions: write         # dispatch CI on the PR branch (see the last step)
 
 concurrency:
   group: data-refresh
   cancel-in-progress: false
+
+env:
+  REFRESH_BRANCH: automated/data-refresh
 
 jobs:
   refresh:
@@ -30,10 +38,10 @@ jobs:
         with:
           python-version-file: .python-version
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements.lock
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.lock
 
       - name: Fetch, validate, gate and promote
         id: weekly
@@ -57,10 +65,13 @@ jobs:
           if-no-files-found: ignore
 
       - name: Open or update the review pull request
+        id: pr
         if: steps.weekly.outputs.promoted == 'true'
+        # Needs: Settings -> Actions -> General -> Workflow permissions ->
+        # "Allow GitHub Actions to create and approve pull requests".
         uses: peter-evans/create-pull-request@v7
         with:
-          branch: automated/data-refresh
+          branch: ${{ env.REFRESH_BRANCH }}
           delete-branch: true
           commit-message: "Promote data through ${{ steps.weekly.outputs.data_last }}"
           title: "Data refresh: data through ${{ steps.weekly.outputs.data_last }}"
@@ -73,3 +84,16 @@ jobs:
             models/registry.json
             reports/data/*.md
           labels: automated, data-refresh
+
+      - name: Run CI on the pull request
+        # A pull request opened with the workflow's own token does not start
+        # other workflows (GitHub prevents loops), so the PR would show no checks.
+        # A workflow_dispatch is the documented exception: it runs CI on the PR
+        # branch, and the results appear as the PR's checks, including training
+        # the model on the new data.
+        if: steps.pr.outputs.pull-request-number != '' && steps.pr.outputs.pull-request-operation != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$REFRESH_BRANCH"
+          echo "CI dispatched for PR #${{ steps.pr.outputs.pull-request-number }} (${{ steps.pr.outputs.pull-request-url }})"
