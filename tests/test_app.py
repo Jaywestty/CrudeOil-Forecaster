@@ -1,4 +1,6 @@
 import pytest
+
+from conftest import v2_payload
 import json
 from unittest.mock import MagicMock
 
@@ -96,14 +98,7 @@ class TestSimulateProbabilisticEndpoint:
     def test_valid_query_returns_weighted_range(self, api_client):
         client, _, fake_groq_client = api_client
 
-        prob_payload = json.dumps({
-            "probabilities": {"opec_cut": 0.6, "geopolitical_tension": 0.4},
-            "primary_driver": "opec_cut",
-            "confidence": "high",
-            "reasoning": "test",
-            "scenario_context": "test query",
-            "specific_entity": None
-        })
+        prob_payload = v2_payload(**{"opec_cut": 0.6, "geopolitical_tension": 0.4})
         fake_message = MagicMock()
         fake_message.content = prob_payload
         fake_choice = MagicMock()
@@ -124,14 +119,7 @@ class TestSimulateProbabilisticEndpoint:
         assert "geopolitical_tension" in body["scenario_breakdown"]
     def test_response_includes_v21_fields(self, api_client):
         client, _, fake_groq_client = api_client
-        payload = json.dumps({
-            "probabilities": {"opec_cut": 0.97, "rate_hike": 0.03},
-            "primary_driver": "opec_cut",
-            "confidence": "high",
-            "reasoning": "test",
-            "scenario_context": "test query",
-            "specific_entity": None
-        })
+        payload = v2_payload(**{"opec_cut": 0.97, "rate_hike": 0.03})
         msg = MagicMock()
         msg.content = payload
         choice = MagicMock()
@@ -146,7 +134,7 @@ class TestSimulateProbabilisticEndpoint:
         assert len(body["statistical_band"]["level_95"]["lower"]) == 8
         assert "backtest" in body["statistical_band"]["note"]
         assert sum(body["final_probabilities"].values()) == pytest.approx(1.0, abs=0.001)
-        assert "rate_hike" in body["dropped_scenarios"]
+        assert "rate_hike" not in body["final_probabilities"]  # 3% is dropped as noise
         assert body["model_info"]["llm"].startswith("openai/gpt-oss-120b")
 
 
