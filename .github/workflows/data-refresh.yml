@@ -1,4 +1,4 @@
-name: Weekly data refresh
+name: Data refresh (every 3 weeks)
 
 # Fetch fresh data, validate it and run the promotion gate. If a new model is
 # promoted: open (or update) a pull request with the data, then run CI on that
@@ -7,6 +7,12 @@ name: Weekly data refresh
 #
 # Flow: refresh -> PR with passing checks -> a person merges -> CI on main ->
 # Render deploys main after its checks pass (and retrains on the new data).
+
+# Cadence: every third Thursday. Cron cannot say "every 3 weeks", so the
+# schedule fires weekly and the first step skips two weeks out of three
+# (counted from ANCHOR_DATE). Skipped weeks finish green in seconds, so they
+# never hold back Render's "deploy after CI checks pass". A manual run
+# (Actions -> Run workflow) always refreshes.
 
 on:
   schedule:
@@ -26,25 +32,42 @@ concurrency:
 
 env:
   REFRESH_BRANCH: automated/data-refresh
+  ANCHOR_DATE: "2026-11-19"   # a refresh Thursday; refreshes repeat every 3 weeks from it
+  EVERY_WEEKS: "3"
 
 jobs:
   refresh:
     runs-on: ubuntu-24.04   # pinned: "latest" moved to 26.04, which has no Python 3.11.8 build
     timeout-minutes: 30
     steps:
+      - name: Is this a refresh week?
+        id: due
+        run: |
+          weeks=$(( ( $(date -u +%s) - $(date -u -d "$ANCHOR_DATE" +%s) ) / 604800 ))
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || [ $(( weeks % EVERY_WEEKS )) -eq 0 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not a refresh week ($weeks weeks since $ANCHOR_DATE; refreshing every $EVERY_WEEKS)."
+          fi
+
       - uses: actions/checkout@v7
+        if: steps.due.outputs.run == 'true'
 
       - uses: actions/setup-python@v7
+        if: steps.due.outputs.run == 'true'
         with:
           python-version-file: .python-version
           cache: pip
           cache-dependency-path: requirements.lock
 
       - name: Install dependencies
+        if: steps.due.outputs.run == 'true'
         run: pip install --require-hashes -r requirements.lock
 
       - name: Fetch, validate, gate and promote
         id: weekly
+        if: steps.due.outputs.run == 'true'
         run: python -m pipeline.weekly
         env:
           # Both keys are required here (free to register). Keyless fallbacks work from a
@@ -55,7 +78,7 @@ jobs:
           EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
 
       - name: Keep the reports with the run
-        if: always()
+        if: always() && steps.due.outputs.run == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: data-refresh-reports
