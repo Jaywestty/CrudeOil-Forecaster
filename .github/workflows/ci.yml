@@ -14,7 +14,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Superseded PR runs are cancelled; runs on main always finish, since they deploy.
+  # Superseded PR runs are cancelled; runs on main always finish, because Render
+  # deploys main once all of a commit's checks pass.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -92,26 +93,3 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs api || true
-
-  # Deploy only what CI has verified. Render's "deploy after CI checks pass"
-  # counts every check on a commit, including the weekly data-refresh job, so a
-  # failed or cancelled refresh blocked deploys of good commits. Instead, CI
-  # triggers Render's deploy hook itself once all the jobs above pass on main.
-  deploy:
-    name: Deploy API to Render
-    needs: [tests, ui-smoke, docker]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Trigger the Render deploy hook
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "::warning::RENDER_DEPLOY_HOOK_URL secret is not set, so nothing was deployed."
-            exit 0
-          fi
-          # The hook URL contains a secret key: never echo it.
-          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL" -o /dev/null
-          echo "Render deploy triggered for ${GITHUB_SHA::7}"
