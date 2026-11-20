@@ -27,11 +27,11 @@ concurrency:
   group: keep-awake-${{ github.event.schedule || 'manual' }}
   cancel-in-progress: true
 
-# URLs are repository variables (Settings -> Secrets and variables -> Actions ->
-# Variables), so they can change without editing this file.
+# URLs default to the live services; the repository variables API_URL and
+# STREAMLIT_APP_URL override them without editing this file.
 env:
   API_URL: ${{ vars.API_URL || 'https://crudeoil-forecaster.onrender.com' }}
-  UI_URL: ${{ vars.STREAMLIT_APP_URL }}
+  UI_URL: ${{ vars.STREAMLIT_APP_URL || 'https://crudeoilforecaster.streamlit.app' }}
 
 jobs:
   api:
