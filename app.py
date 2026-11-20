@@ -20,7 +20,12 @@ from serving.observability import (
 # several LLM calls, so both are bounded at the edge of the API.
 MAX_WEEKS = 12
 MAX_QUERY_CHARS = 500
-STALE_DATA_DAYS = 21  # the weekly refresh should keep data younger than this
+STALE_DATA_DAYS = 35  # refresh runs every 3 weeks; data a little older than that is normal
+OUT_OF_SCOPE_MESSAGE = (
+    "This question does not look like it is about oil, energy markets or the macro forces "
+    "the model covers, so no scenario forecast was produced. Try asking about supply, "
+    "demand, conflict, recession or interest rates."
+)
 
 log = configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 metrics = Metrics()
@@ -331,7 +336,7 @@ def health():
 
     Always returns HTTP 200 while the process can serve (so a keep-alive ping
     never fails), with status "degraded" and warnings when something needs
-    attention, e.g. data older than the weekly refresh should allow.
+    attention, e.g. data older than the 3-week refresh cycle should allow.
     """
     warnings = []
     origin = engine.forecast_origin
@@ -341,7 +346,7 @@ def health():
     else:
         age_days = int((pd.Timestamp.now().normalize() - origin).days)
         if age_days > STALE_DATA_DAYS:
-            warnings.append(f"data is {age_days} days old; the weekly refresh may have stopped")
+            warnings.append(f"data is {age_days} days old; the scheduled refresh may have stopped")
     return {
         "status": "degraded" if warnings else "ok",
         "model_loaded": engine.model is not None,
@@ -548,6 +553,14 @@ def run_probabilistic_simulation(request: ScenarioRequest, http: Request):
                 "specific_entity":  None
             }
 
+        # Off-topic questions are rejected (step 5 decision T6: the evaluation
+        # caught 15/15 off-topic questions and wrongly rejected 0/93 real ones,
+        # which met the bar fixed before the run for enforcing). A parser
+        # fallback always reports in_scope=True, so an LLM outage never
+        # turns into a rejection.
+        if parsed.get("in_scope") is False:
+            raise HTTPException(status_code=422, detail={"code": "out_of_scope", "message": OUT_OF_SCOPE_MESSAGE})
+
         probabilities = parsed["probabilities"]
         weeks         = request.forecast_weeks
 
@@ -623,6 +636,8 @@ def run_probabilistic_simulation(request: ScenarioRequest, http: Request):
             response_cache.set(key, response)
         return response
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

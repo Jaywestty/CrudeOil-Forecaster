@@ -228,6 +228,7 @@ def run_probabilistic_simulation(query, forecast_weeks):
         if r.status_code == 200:
             return r.json(), None
         try:
+            # A dict detail is a structured refusal, e.g. {"code": "out_of_scope", "message": ...}
             return None, r.json().get("detail", f"HTTP {r.status_code}")
         except ValueError:
             return None, f"HTTP {r.status_code}"
@@ -542,9 +543,6 @@ def render_data_tab(data):
 def render_results(data, query):
     st.markdown(f"<div class='small-mono' style='margin-bottom:0.6rem;'>Results for: "
                 f"<span style='color:#f0ede8;'>“{safe_text(query)}”</span></div>", unsafe_allow_html=True)
-    if data.get("in_scope") is False:
-        st.info("This question doesn't look like it is about oil or the macro forces the model covers, "
-                "so all scenarios are weighted equally. Try asking about supply, demand, conflict or rates.")
     if data.get("llm_fallback"):
         st.warning("The language model could not be reached, so default scenario weights and fallback "
                    "text were used. The forecast numbers are still computed by the model. Try again shortly.")
@@ -658,7 +656,10 @@ def main():
         else:
             with st.spinner("Weighting scenarios, applying macro signals and running SARIMAX..."):
                 data, error = run_probabilistic_simulation(query.strip(), weeks)
-            if error:
+            if isinstance(error, dict) and error.get("code") == "out_of_scope":
+                st.info(error.get("message", "This question is outside what the model covers."))
+                st.session_state.pop("result", None)  # don't leave an older answer under the notice
+            elif error:
                 st.error(f"Simulation failed: {error}")
             else:
                 # Keep results across reruns: Streamlit re-executes the script on every

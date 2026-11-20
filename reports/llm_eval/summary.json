@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "model": "openai/gpt-oss-120b",
+    "cases": 40,
+    "v2_repeats": 3,
+    "v1_repeats": 1,
+    "run_at": "2026-11-20 23:01 UTC"
+  },
+  "summaries": {
+    "v2": {
+      "calls": 120,
+      "infra_errors": 0,
+      "T1_valid": 1.0,
+      "T2_single_primary": 1.0,
+      "T3_primary": 1.0,
+      "all_checks_passed": 1.0,
+      "T5_injection": 1.0,
+      "latency_p50_s": 0.8245,
+      "latency_p95_s": 1.1978999999999997,
+      "T6_offtopic_recall": 1.0,
+      "T6_false_reject": 0.0,
+      "T4_consistency_l1": 0.09398666666666668
+    },
+    "v1": {
+      "calls": 40,
+      "infra_errors": 0,
+      "T1_valid": 0.85,
+      "T2_single_primary": 1.0,
+      "T3_primary": 1.0,
+      "all_checks_passed": 0.9705882352941176,
+      "T5_injection": 0.5,
+      "latency_p50_s": 0.7264999999999999,
+      "latency_p95_s": 1.0106999999999997,
+      "T4_consistency_l1": null
+    }
+  }
+}

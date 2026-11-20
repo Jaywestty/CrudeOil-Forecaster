@@ -1,4 +1,4 @@
-"""Weekly refresh: fetch -> build -> validate -> diff -> gate -> promote.
+"""Scheduled refresh (every 3 weeks; see data-refresh.yml): fetch -> build -> validate -> diff -> gate -> promote.
 
 Usage:
     python -m pipeline.weekly            # what the scheduled GitHub Action runs
