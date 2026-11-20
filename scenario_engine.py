@@ -312,7 +312,7 @@ class ScenarioEngine:
     # Single named scenario — used by /simulate and the probabilistic mode
     # ─────────────────────────────────────────────────────────────────────
 
-    def run_scenario(self, scenario_key, forecast_weeks=12, baseline_result=None):
+    def run_scenario(self, scenario_key, forecast_weeks=12, baseline_result=None, shocks=None):
         """
         Run a specific named scenario and compare to baseline.
 
@@ -321,6 +321,10 @@ class ScenarioEngine:
             forecast_weeks (int): how many weeks ahead to forecast
             baseline_result (dict, optional): a run_baseline() result to reuse,
                 so a multi-scenario run computes the baseline only once
+            shocks (dict, optional): shock values to use instead of the
+                scenario's defaults (e.g. scaled by severity). Passing them in
+                avoids mutating the shared SCENARIOS table, which is unsafe
+                when requests run concurrently.
 
         Returns:
             dict with baseline, shocked forecast, and impact analysis
@@ -332,7 +336,7 @@ class ScenarioEngine:
             )
 
         scenario = SCENARIOS[scenario_key]
-        shocks   = scenario['shocks']
+        shocks   = scenario['shocks'] if shocks is None else shocks
 
         print(f"▶  Running scenario: {scenario['name']}")
         print(f"   {scenario['description']}\n")
