@@ -166,3 +166,15 @@ def api_client(monkeypatch):
     yield client, app_module, fake_groq_client
 
     sys.modules.pop("app", None)
+
+def v2_payload(in_scope=True, confidence="high", reasoning="test reasoning",
+               scenario_context="test query", specific_entity=None, **weights):
+    """A valid structured (v2) scenario-weighting reply. Unlisted weights are 0."""
+    full = {k: 0.0 for k in ("opec_cut", "global_recession", "rate_hike",
+                             "geopolitical_tension", "demand_boom")}
+    full.update(weights)
+    return json.dumps({
+        "in_scope": in_scope, "weights": full, "confidence": confidence,
+        "reasoning": reasoning, "scenario_context": scenario_context,
+        "specific_entity": specific_entity,
+    })
