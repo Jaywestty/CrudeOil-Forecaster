@@ -212,3 +212,20 @@ def test_simulate_never_mutates_the_shared_scenario_table(api_client):
     assert app_module.SCENARIOS["opec_cut"]["shocks"] == before
     assert r.json()["shocks_applied"]["inventory_pct"] == pytest.approx(2 * before["inventory_pct"])
     assert len(r.json()["weekly_forecasts"]) == 12  # LLM's 40 weeks clamped to the validated maximum
+
+
+def test_off_topic_questions_are_rejected_without_a_forecast(api_client):
+    client, app_module, fake = api_client
+    _llm_returns(fake, v2_payload(in_scope=False, opec_cut=0.2, global_recession=0.2, rate_hike=0.2,
+                                  geopolitical_tension=0.2, demand_boom=0.2))
+    r = _simulate(client, query="What is the best pizza topping?")
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "out_of_scope"
+    assert fake.chat.completions.create.call_count == 1  # no explanation calls after the refusal
+
+
+def test_llm_outage_is_never_turned_into_a_rejection(api_client):
+    client, _, fake = api_client
+    fake.chat.completions.create.side_effect = groq.GroqError("connection reset")
+    r = _simulate(client)
+    assert r.status_code == 200 and r.json()["llm_fallback"] is True and r.json()["in_scope"] is True
