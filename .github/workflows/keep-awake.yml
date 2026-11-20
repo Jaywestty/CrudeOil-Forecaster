@@ -1,0 +1,75 @@
+name: Keep awake
+
+# Prevents cold starts on the free tiers:
+#   - Render spins the API down after 15 minutes without requests, so it is
+#     pinged every 10 minutes.
+#   - Streamlit Community Cloud sleeps apps after a stretch without visitors;
+#     a headless browser visits it every 6 hours (visiting the UI also wakes
+#     the API, which the UI calls on load).
+#
+# These jobs never fail: scheduled runs attach their result as a check on the
+# latest main commit, and a failing check would hold back Render's
+# "deploy after CI checks pass". Problems show up as warnings instead.
+#
+# GitHub may delay scheduled runs at busy times, so a gap can occasionally
+# exceed 15 minutes; an external monitor (see README) makes this airtight.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # Render API
+    - cron: "17 */6 * * *"   # Streamlit UI (off the hour, when GitHub is less busy)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-awake-${{ github.event.schedule || 'manual' }}
+  cancel-in-progress: true
+
+# URLs are repository variables (Settings -> Secrets and variables -> Actions ->
+# Variables), so they can change without editing this file.
+env:
+  API_URL: ${{ vars.API_URL || 'https://crudeoil-forecaster.onrender.com' }}
+  UI_URL: ${{ vars.STREAMLIT_APP_URL }}
+
+jobs:
+  api:
+    name: Ping Render API
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/10 * * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health (allowing for a cold start)
+        run: |
+          # A sleeping instance takes ~30-60 s to wake; retry while it starts.
+          if out=$(curl -sS --max-time 90 --retry 3 --retry-delay 10 --retry-all-errors "$API_URL/health"); then
+            echo "::notice::API up: $out"
+          else
+            echo "::warning::API did not answer /health (cold start or outage)"
+          fi
+
+  ui:
+    name: Visit Streamlit UI
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 */6 * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install a headless browser
+        run: |
+          pip install -q playwright==1.48.0
+          python -m playwright install --with-deps chromium
+
+      - name: Visit the app like a user
+        run: |
+          if [ -z "$UI_URL" ]; then
+            echo "::warning::Set the STREAMLIT_APP_URL repository variable to keep the UI awake."
+            exit 0
+          fi
+          python ops/wake_streamlit.py "$UI_URL"
