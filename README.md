@@ -357,12 +357,12 @@ a safe default was used).
 |---|---|---|
 | `GROQ_API_KEY` | Render | LLM access |
 | `GROQ_MODEL` | Render (optional) | Override the default `openai/gpt-oss-120b` |
-| `FRED_API_KEY` | Render (optional) | Live price in the sidebar |
+| `FRED_API_KEY` | Render (optional) and GitHub secret (required) | Live price in the sidebar; FRED data for the weekly refresh |
 | `API_URL` | Streamlit secrets | Backend URL |
 | `ALLOWED_ORIGINS` | Render (optional) | Comma-separated origins allowed to call the API from a browser (default `*`) |
 | `CACHE_TTL_SECONDS`, `CACHE_MAX_ENTRIES` | Render (optional) | Response cache lifetime (default 6 h) and size (default 256) |
 | `LOG_LEVEL` | Render (optional) | Default `INFO` |
-| `EIA_API_KEY` | GitHub secret (optional) | Inventories; EIA's public `DEMO_KEY` otherwise |
+| `EIA_API_KEY` | GitHub secret (required) | Inventories for the weekly refresh ([free key](https://www.eia.gov/opendata/register.php)) |
 
 **Updating dependencies:** edit `requirements.txt` (or `streamlit_ui/requirements.txt`), then
 regenerate the lock inside the production Python so versions and hashes match Linux:
@@ -372,7 +372,9 @@ docker run --rm -v "$PWD:/src" -w /src python:3.11.8-slim sh -c   "pip install p
 ```
 
 One-time setup for the weekly refresh: in the repository's **Settings → Actions → General**,
-allow GitHub Actions to create pull requests. Never commit `.env`; it is git-ignored.
+allow GitHub Actions to create pull requests, and add `FRED_API_KEY` and `EIA_API_KEY` as
+repository secrets (both free). Keyless public access works locally but was refused from
+GitHub's shared runners. Never commit `.env`; it is git-ignored.
 
 ---
 
