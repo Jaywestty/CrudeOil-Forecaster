@@ -39,10 +39,12 @@ jobs:
         id: weekly
         run: python -m pipeline.weekly
         env:
-          # FRED_API_KEY: required in practice. Without it the pipeline falls back to FRED's
-          # website CSV, which timed out from GitHub's runners (run #1).
+          # Both keys are required here (free to register). Keyless fallbacks work from a
+          # laptop but failed from GitHub's shared runners: FRED's website CSV timed out
+          # (run #1) and EIA refused the shared DEMO_KEY (run #2). The job checks for both
+          # before fetching anything.
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}   # optional; falls back to EIA's public DEMO_KEY
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
 
       - name: Keep the reports with the run
         if: always()
