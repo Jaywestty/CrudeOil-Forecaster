@@ -13,6 +13,9 @@ events in the past.**
 > The live API runs on Render's free tier: the first request after 15 idle minutes takes
 > 30–60 seconds while it wakes up.
 
+> **Full technical write-up:** [docs/RESEARCH.md](docs/RESEARCH.md) explains every experiment,
+> its decision rule, the results and how far to trust them.
+
 ---
 
 ## Contents
@@ -25,6 +28,7 @@ events in the past.**
 - [Data pipeline and MLOps](#data-pipeline-and-mlops)
 - [Run it yourself](#run-it-yourself) · [API](#api) · [Project structure](#project-structure)
 - [Design decisions and trade-offs](#design-decisions-and-trade-offs) · [Limitations](#limitations-and-next-steps)
+- [Research notes](docs/RESEARCH.md): the full methodology write-up, for ML researchers
 
 ---
 
@@ -83,16 +87,20 @@ happened historically after similar events, clearly labelled as history rather t
   rollback ([pipeline/](pipeline)).
 - **Reproducible installs.** Hash-locked dependencies for the API and UI, installed by CI so
   tests run against exactly the versions that ship.
-- **Automation with a human in the loop.** CI on every push, and a weekly job that fetches
-  new data, runs the gate and opens a pull request for review ([workflows](.github/workflows)).
-- **A production LLM integration.** `gpt-oss-120b` on Groq, with token budgeting for a
-  reasoning model, graceful fallbacks, and guardrails so the model presents history as
-  history.
+- **Automation with a human in the loop.** CI on every push, and a job every 3 weeks that
+  fetches new data, runs the gate and opens a pull request for review ([workflows](.github/workflows)).
+- **A production LLM integration.** `gpt-oss-120b` on Groq, with schema-validated structured
+  output, token budgeting for a reasoning model, graceful fallbacks, and guardrails so the model
+  presents history as history.
+- **An evaluated LLM layer.** 40 test questions (including off-topic and prompt-injection
+  attempts) scored against targets fixed before the run: the structured parser was valid
+  120/120 times vs 85% for the original, resisted every injection (the original failed half),
+  and now rejects off-topic questions ([report](reports/llm_eval/report.md)).
 - **Debugging in production.** A 488 MB model file crashed the 512 MB server. Keeping only
   the model's final state cut it to 2.8 MB with identical forecasts.
 - **Production hardening.** Input limits, a response cache keyed on data and model version,
   structured JSON logs with request ids, a `/metrics` endpoint and readiness checks.
-- **160 automated tests** covering the API, engine, LLM layer, evaluation and pipeline.
+- **183 automated tests** covering the API, engine, LLM layer, evaluation and pipeline.
 
 **Tech stack:** Python 3.11 · statsmodels (SARIMAX) · scikit-learn · pandas · FastAPI ·
 Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · GitHub Actions · Render.
@@ -111,6 +119,8 @@ Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · GitHub Action
 | Does history predict what happens after an event? | **No.** After 9 geopolitical shocks, Brent moved anywhere from **−63% to +17%** in 12 weeks; the median was near zero. |
 | Did a data-timing leak matter? | Monthly data was dated before it was published. Fixing it changed accuracy by only ~1%, but revealed the deployed model is **significantly worse than no-change at 12 weeks** (Holm p = 0.038). |
 | How does the live model do on unseen data? | On the 45 weeks added in November 2026: one-week error **$8.27 vs $8.29** for no-change. Still no edge. |
+| Can the language model be trusted to read the question? | **Mostly, after a redesign.** The original free-form parser broke on 15% of test questions and followed half of the injection attempts. The structured version was valid every time, picked the right main scenario every time and caught every off-topic question. The test set is small and was not held out, so this shows reliability, not perfection. |
+| What is the LLM layer missing? | **A scenario.** Questions about *more* supply (OPEC raising output) or peace deals had nowhere to go, so they were mapped to recession, rate hikes or demand. The five-scenario vocabulary, not the model, is the limit. |
 
 **The takeaway:** the project's value is not a clever price prediction. It is a scenario tool
 built on an evaluation that tells the truth about what can and cannot be predicted.
@@ -186,6 +196,25 @@ labelled context.
 Monthly series are shifted to their publication dates (`v2-release-aware` recipe) and
 partial final weeks are dropped. The change was adopted on principle before measuring it.
 
+### 6. LLM evaluation ([report](reports/llm_eval/report.md), [cases](evaluation/llm_eval_cases.jsonl))
+The scenario-weighting parser was rebuilt with JSON Schema structured output, Pydantic
+validation, one retry, an `in_scope` flag and injection-resistant prompting, then compared with
+the original on 40 labelled questions (v2 run 3 times each). Targets were fixed first.
+
+| | v2 (structured) | v1 (original) | target |
+|---|---|---|---|
+| Valid output | 120/120 | 34/40 | 100% |
+| Correct main scenario | 100% | 100% | ≥ 85% |
+| Consistency (mean L1 between repeats) | 0.094 | – | ≤ 0.20 |
+| Injection attempts handled | 12/12 | 2/4 | 100% |
+| Off-topic caught / real questions rejected | 15/15 / 0/93 | – | ≥ 90% / ≤ 5% |
+| Latency p50 | 0.82 s | 0.73 s | |
+
+The pre-registered rule said to *enforce* off-topic rejection only if both off-topic thresholds
+were met; they were, so the API now refuses off-topic questions. Caveats (a small,
+author-written set; weights that behave as soft labels rather than probabilities) are discussed
+in [the research notes](docs/RESEARCH.md#8-the-llm-layer-evaluating-a-structured-parser).
+
 ---
 
 ## Data pipeline and MLOps
@@ -222,7 +251,7 @@ flowchart LR
 - **Registry:** [`models/registry.json`](models/registry.json) records data hashes, fit summary,
   gate results, any override and the previous version, so every forecast can be traced back.
 - **Automation:** one CI job runs the tests and a UI dependency check on every pull request and
-  on `main`. The weekly refresh opens a pull request only when a new model is promoted, then runs
+  on `main`. The refresh (every 3 weeks) opens a pull request only when a new model is promoted, then runs
   CI on it, including training the model on the new data. A person merges; Render deploys
   `main` once its checks pass.
 
@@ -264,6 +293,7 @@ python -m evaluation.run_calibration        # ~4 min  -> reports/calibration/
 python -m evaluation.run_scenario_study     # ~1 min  -> reports/scenarios/
 python -m pipeline.refresh --fetch          # fetch + build + validate -> data/staging/
 python -m pipeline.promote                  # dry run of the promotion gate
+python -m evaluation.run_llm_eval           # needs GROQ_API_KEY, ~20 min -> reports/llm_eval/
 ```
 
 ---
@@ -298,6 +328,10 @@ a safe default was used).
 **Production behaviour**
 - **Input limits:** `forecast_weeks` must be 1–12 (the validated range) and `query` 3–500
   characters; anything else is rejected with HTTP 422 before any LLM call.
+- **Off-topic questions:** if the language model judges the question unrelated to oil or the
+  macro forces the model covers, `/simulate-probabilistic` returns HTTP 422 with
+  `{"code": "out_of_scope"}` instead of a meaningless forecast. If the LLM is unavailable, the
+  question is never rejected; a default weighting is used and `llm_fallback` is true.
 - **Caching:** identical questions (ignoring case and spacing) are answered from a 6-hour cache
   keyed on the question, horizon, data version and LLM model: ~15 ms instead of several seconds,
   with no LLM calls. Degraded answers are never cached.
@@ -318,14 +352,16 @@ a safe default was used).
 ├── train.py                Builds the served model (runs on every Render deploy)
 ├── streamlit_ui/           Streamlit app and its isolated requirements
 ├── evaluation/             Backtest, challengers, calibration, scenario study
-├── pipeline/               Fetch, build, validate, diff, promotion gate, weekly job
+├── pipeline/               Fetch, build, validate, diff, promotion gate, scheduled refresh
 ├── data/                   Live dataset, raw snapshots, event catalogue, manifest
 ├── models/registry.json    Promotion history (the model file itself is built on deploy)
 ├── reports/                Generated evaluation and data reports
 ├── serving/                Response cache, JSON logging, request ids, metrics
-├── tests/                  160 tests
+├── ops/                    Keep-awake script for the Streamlit app
+├── docs/RESEARCH.md        Full methodology and results write-up
+├── tests/                  183 tests
 ├── requirements.lock       Every dependency pinned with hashes (streamlit_ui/ has its own)
-└── .github/workflows/      CI and the weekly data refresh
+└── .github/workflows/      CI, data refresh, keep-awake, LLM evaluation
 ```
 
 ---
@@ -336,18 +372,19 @@ a safe default was used).
 |---|---|---|
 | API | Render (free tier, 512 MB) | Build: `pip install -r requirements.txt && python train.py` · Start: `uvicorn app:app --host 0.0.0.0 --port $PORT` · Python 3.11.8 from `.python-version` · Auto-deploys after CI checks pass |
 | UI | Streamlit Community Cloud | Entry point `streamlit_ui/app_ui.py`; `API_URL` set as a secret |
-| Data | GitHub Actions | Weekly refresh opens a pull request; merging it redeploys the API |
+| Data | GitHub Actions | Refresh every 3 weeks opens a pull request; merging it redeploys the API |
 
 | Variable | Where | Purpose |
 |---|---|---|
 | `GROQ_API_KEY` | Render | LLM access |
 | `GROQ_MODEL` | Render (optional) | Override the default `openai/gpt-oss-120b` |
-| `FRED_API_KEY` | Render (optional) and GitHub secret (required) | Live price in the sidebar; FRED data for the weekly refresh |
+| `FRED_API_KEY` | Render (optional) and GitHub secret (required) | Live price in the sidebar; FRED data for the scheduled refresh |
 | `API_URL` | Streamlit secrets | Backend URL |
 | `ALLOWED_ORIGINS` | Render (optional) | Comma-separated origins allowed to call the API from a browser (default `*`) |
 | `CACHE_TTL_SECONDS`, `CACHE_MAX_ENTRIES` | Render (optional) | Response cache lifetime (default 6 h) and size (default 256) |
 | `LOG_LEVEL` | Render (optional) | Default `INFO` |
-| `EIA_API_KEY` | GitHub secret (required) | Inventories for the weekly refresh ([free key](https://www.eia.gov/opendata/register.php)) |
+| `EIA_API_KEY` | GitHub secret (required) | Inventories for the scheduled refresh ([free key](https://www.eia.gov/opendata/register.php)) |
+| `GROQ_API_KEY` | GitHub secret (optional) | Only for the manual *LLM evaluation* workflow |
 
 **Updating dependencies:** edit `requirements.txt` (or `streamlit_ui/requirements.txt`), then
 regenerate the lock on Linux with Python 3.11 (e.g. the repository's dev container or a
@@ -362,7 +399,7 @@ pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock
 
 | Step | What happens |
 |---|---|
-| 1. Weekly refresh (Thursday, or *Run workflow*) | Fetches data, validates, runs the gate. Nothing new or nothing promoted: stops, no PR, no CI. |
+| 1. Refresh (every third Thursday, or *Run workflow* at any time) | Fetches data, validates, runs the gate. Nothing new or nothing promoted: stops, no PR, no CI. |
 | 2. Pull request | If a model is promoted, a PR with the new data opens and CI runs on it: tests, UI dependency check, and training the model on the new data. |
 | 3. Review and merge | Check the PR's results and promotion report, then merge. |
 | 4. Deploy | CI runs on `main`; when it passes, Render deploys and retrains on the new data. |
@@ -370,7 +407,7 @@ pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock
 Render waits for *every* check on a commit, so avoid running the refresh by hand on a `main`
 commit whose CI is still running: if that refresh failed, it would hold back the deploy.
 
-One-time setup for the weekly refresh: in the repository's **Settings → Actions → General →
+One-time setup for the scheduled refresh: in the repository's **Settings → Actions → General →
 Workflow permissions**, tick "Allow GitHub Actions to create and approve pull requests", and add `FRED_API_KEY` and `EIA_API_KEY` as
 repository secrets (both free). Keyless public access works locally but was refused from
 GitHub's shared runners. Never commit `.env`; it is git-ignored.
@@ -397,6 +434,30 @@ Two things to know:
 - Render's free tier includes 750 instance hours per workspace per month. One always-on service
   uses ~720–744, so keeping a second free service awake in the same workspace would exhaust the
   hours and suspend both until the next month.
+
+### GitHub Actions usage
+
+All four workflows start on their own except the LLM evaluation; a person only merges refresh
+pull requests.
+
+| Workflow | Runs | Typical length |
+|---|---|---|
+| CI | on pull requests and pushes to `main` | a few minutes (longer on refresh PRs, which train the model) |
+| Data refresh | Thursdays; refreshes every third week, the other two finish in seconds | a few minutes when it refreshes |
+| Keep awake | API every 10 minutes, UI every 6 hours | seconds (API), 1–2 minutes (UI) |
+| LLM evaluation | manual only | ~20 minutes, on the Groq free tier |
+
+- **Cost:** the repository is public, so GitHub-hosted runner minutes are free and unlimited.
+  (A private repository on the free plan gets 2,000 minutes a month; keep-awake alone would use
+  more than that, because every job is billed as at least one minute.)
+- **Tokens:** each job gets a short-lived `GITHUB_TOKEN` that expires when the job ends; there is
+  nothing to use up. Keep-awake makes no GitHub API calls. The only metered key is
+  `GROQ_API_KEY`, and only the manual LLM evaluation uses it in Actions.
+- **Limits worth knowing:** a job can run for at most 6 hours, the free plan runs up to 20 jobs
+  at once (these use one or two), and the shortest schedule interval is 5 minutes.
+- **The 60-day rule:** GitHub disables scheduled workflows in a public repository after 60 days
+  without repository activity. Merging a refresh PR counts; if the repository goes quiet for
+  two months, re-enable the workflows from the Actions tab.
 
 ---
 
@@ -426,12 +487,18 @@ Two things to know:
 - No model beats a no-change forecast for weekly Brent; treat outputs as scenarios.
 - Statistical bands are too narrow in crises.
 - Scenario weights come from a language model, not from market-implied probabilities.
-- Five fixed scenarios: novel events (carbon taxes, SPR releases) have to map onto one of them.
+- Five fixed scenarios: novel events (carbon taxes, SPR releases) have to map onto one of them,
+  and there is no supply-glut or de-escalation scenario.
+- The LLM test set is small and was written alongside the prompt, so it is not a held-out test.
 - Scenario shocks shift the price once rather than building up over the horizon.
 
 **Next steps**
-- A rigorous evaluation set for the LLM layer (consistency and correctness of the weights).
 - Volatility forecasts (e.g. GARCH) for intervals that hold up in crises.
+- Supply-glut and de-escalation scenarios, calibrated on their own historical events.
+- A harder, held-out LLM test set written by someone else.
+- Real-time data vintages (ALFRED) and futures-curve inputs.
+
+See [docs/RESEARCH.md](docs/RESEARCH.md#10-what-i-would-do-next) for the reasoning.
 
 ---
 
