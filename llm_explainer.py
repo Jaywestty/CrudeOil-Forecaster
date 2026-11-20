@@ -1,9 +1,30 @@
+import contextvars
 import os
 import json
 from groq import Groq, GroqError
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Fallback tracking ──────────────────────────────────────────────
+# Every LLM call has a safe fallback, so failures never crash a request.
+# They are recorded so the API can (a) avoid caching degraded answers and
+# (b) count them in /metrics. A context variable keeps concurrent requests
+# (FastAPI runs sync endpoints in a thread pool) from seeing each other's.
+_fallbacks = contextvars.ContextVar("llm_fallbacks", default=None)
+
+
+def track_fallbacks() -> list:
+    """Start recording fallbacks for the current request; returns the live list."""
+    events: list = []
+    _fallbacks.set(events)
+    return events
+
+
+def _record_fallback(kind: str) -> None:
+    events = _fallbacks.get()
+    if events is not None:
+        events.append(kind)
 
 # ── LLM configuration ──────────────────────────────────────────────
 # gpt-oss-120b is a reasoning model: it "thinks" before answering, and those
@@ -200,6 +221,7 @@ class LLMExplainer:
             return parsed
 
         except (json.JSONDecodeError, KeyError, ValueError, TypeError, GroqError):
+            _record_fallback("parse_single")
             # JSONDecodeError -> LLM returned malformed JSON
             # KeyError        -> expected key missing from parsed dict
             # ValueError      -> raised because LLM returned a list not dict
@@ -333,6 +355,7 @@ class LLMExplainer:
             return parsed
 
         except (json.JSONDecodeError, KeyError, ValueError, TypeError, GroqError):
+            _record_fallback("parse_probabilistic")
             print("  Probabilistic parse failed -- using fallback")
             return {
                 "probabilities":    {"geopolitical_tension": 1.0},
@@ -429,6 +452,7 @@ class LLMExplainer:
             return raw
 
         except Exception as e:
+            _record_fallback("explain_single")
             # Log the real error for operators; never show raw API errors to users.
             print(f"  Explanation generation failed: {e}")
             return EXPLANATION_FALLBACK
@@ -548,6 +572,7 @@ class LLMExplainer:
             return raw
 
         except Exception as e:
+            _record_fallback("explain_probabilistic")
             # Log the real error for operators; never show raw API errors to users.
             print(f"  Explanation generation failed: {e}")
             return EXPLANATION_FALLBACK
@@ -584,6 +609,7 @@ class LLMExplainer:
             return raw
 
         except Exception as e:
+            _record_fallback("uncertainty_single")
             return "Model assumes historical relationships remain stable. Structural breaks may cause actual outcomes to differ significantly."
 
 
@@ -628,6 +654,7 @@ class LLMExplainer:
             return raw
 
         except Exception as e:
+            _record_fallback("uncertainty_probabilistic")
             return (
                 "Scenario probabilities are LLM-estimated and not derived from "
                 "options market data. Actual outcomes may fall outside the stated "
