@@ -542,6 +542,9 @@ def render_data_tab(data):
 def render_results(data, query):
     st.markdown(f"<div class='small-mono' style='margin-bottom:0.6rem;'>Results for: "
                 f"<span style='color:#f0ede8;'>“{safe_text(query)}”</span></div>", unsafe_allow_html=True)
+    if data.get("llm_fallback"):
+        st.warning("The language model could not be reached, so default scenario weights and fallback "
+                   "text were used. The forecast numbers are still computed by the model. Try again shortly.")
     render_summary(data)
     st.markdown("<br>", unsafe_allow_html=True)
     tab_fc, tab_sc, tab_ex, tab_data = st.tabs(["📈 Forecast", "🎯 Scenarios", "📝 Explanation", "🔢 Data"])
