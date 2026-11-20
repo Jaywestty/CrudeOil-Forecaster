@@ -1,11 +1,11 @@
 {
-  "built_at": "2026-11-19T01:17:51+00:00",
+  "built_at": "2026-11-20T21:22:07+00:00",
   "recipe": "v2-release-aware",
   "release_lag_days": {
     "industrial_prod": 45,
     "fed_funds": 32
   },
-  "end": "2026-11-19",
+  "end": "2026-11-20",
   "sources": {
     "brent": {
       "source": "fred",
@@ -40,8 +40,8 @@
     "vix": {
       "source": "fred",
       "series_id": "VIXCLS",
-      "raw_last_date": "2026-11-17",
-      "raw_sha256": "60c63ee7bc69a048"
+      "raw_last_date": "2026-11-19",
+      "raw_sha256": "849252bdf4ff92dd"
     }
   },
   "weekly": {
@@ -53,7 +53,7 @@
   },
   "transformed": {
     "rows": 1088,
-    "sha256": "eb0ed461331fb486"
+    "sha256": "3ec17bdacb0e7e6c"
   },
   "validation": {
     "ok": true,
