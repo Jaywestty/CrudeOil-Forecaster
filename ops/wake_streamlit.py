@@ -6,7 +6,7 @@ browser opens a session. This script loads the page like a visitor, clicks
 "Yes, get this app back up!" if the app is asleep, and waits for it to render.
 
 Usage:
-    python ops/wake_streamlit.py https://crude-forecaster.streamlit.app
+    python ops/wake_streamlit.py https://crudeoilforecaster.streamlit.app
 
 Always exits 0 (problems are printed as GitHub warnings): a failed keep-awake
 run would otherwise attach a failing check to the latest main commit and hold
