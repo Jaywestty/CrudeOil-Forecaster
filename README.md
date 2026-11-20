@@ -4,7 +4,7 @@
 Brent price outlook, an honest uncertainty range, and what actually happened after similar
 events in the past.**
 
-[![Live demo](https://img.shields.io/badge/Live%20demo-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)](https://crude-forecaster.streamlit.app/)
+[![Live demo](https://img.shields.io/badge/Live%20demo-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit)](https://crudeoilforecaster.streamlit.app/)
 [![API docs](https://img.shields.io/badge/API%20docs-FastAPI-009688?style=for-the-badge&logo=fastapi)](https://crudeoil-forecaster.onrender.com/docs)
 [![CI](https://github.com/Jaywestty/CrudeOil-Forecaster/actions/workflows/ci.yml/badge.svg)](https://github.com/Jaywestty/CrudeOil-Forecaster/actions/workflows/ci.yml)
 
@@ -384,8 +384,9 @@ GitHub's shared runners. Never commit `.env`; it is git-ignored.
 | Render API | 15 minutes without requests | `GET /health` every 10 minutes, retrying through a cold start |
 | Streamlit UI | a period without visitors (plain HTTP requests don't count) | a headless browser visits every 6 hours and clicks "Yes, get this app back up" if needed ([script](ops/wake_streamlit.py)) |
 
-Setup: add a repository **variable** (Settings → Secrets and variables → Actions → Variables)
-`STREAMLIT_APP_URL` with the app's address; `API_URL` is optional (defaults to the Render URL).
+No setup needed: the URLs default to the live services. To point at different deployments, set
+the repository variables `STREAMLIT_APP_URL` or `API_URL` (Settings → Secrets and variables →
+Actions → Variables).
 Both jobs report problems as warnings and never fail, because a failing scheduled run would
 attach a failing check to the latest `main` commit and hold back Render's deploy.
 
