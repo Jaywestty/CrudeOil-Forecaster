@@ -81,6 +81,8 @@ happened historically after similar events, clearly labelled as history rather t
 - **A reproducible data pipeline.** Raw-data snapshots, pure build functions, validation, a
   promotion gate with recorded human overrides, and a model registry with lineage and
   rollback ([pipeline/](pipeline)).
+- **Reproducible deployment.** Docker images for the API and UI built from hash-locked
+  dependencies, non-root, with health checks; CI builds the image and serves a simulation.
 - **Automation with a human in the loop.** CI on every push, and a weekly job that fetches
   new data, runs the gate and opens a pull request for review ([workflows](.github/workflows)).
 - **A production LLM integration.** `gpt-oss-120b` on Groq, with token budgeting for a
@@ -88,10 +90,12 @@ happened historically after similar events, clearly labelled as history rather t
   history.
 - **Debugging in production.** A 488 MB model file crashed the 512 MB server. Keeping only
   the model's final state cut it to 2.8 MB with identical forecasts.
-- **140 automated tests** covering the API, engine, LLM layer, evaluation and pipeline.
+- **Production hardening.** Input limits, a response cache keyed on data and model version,
+  structured JSON logs with request ids, a `/metrics` endpoint and readiness checks.
+- **160 automated tests** covering the API, engine, LLM layer, evaluation and pipeline.
 
 **Tech stack:** Python 3.11 · statsmodels (SARIMAX) · scikit-learn · pandas · FastAPI ·
-Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · GitHub Actions · Render.
+Streamlit · Plotly · Groq (gpt-oss-120b) · FRED and EIA data · Docker · GitHub Actions · Render.
 
 ---
 
@@ -224,6 +228,20 @@ flowchart LR
 
 ## Run it yourself
 
+### Option A: Docker (one command)
+
+```bash
+git clone https://github.com/Jaywestty/CrudeOil-Forecaster.git
+cd CrudeOil-Forecaster
+echo "GROQ_API_KEY=your_key" > .env
+docker compose up --build        # API: http://localhost:8000/docs   UI: http://localhost:8501
+```
+
+Both images install from hash-locked dependencies, run as a non-root user and have health
+checks; the API image trains its model at build time, so containers start in seconds.
+
+### Option B: Python
+
 **Prerequisites:** Python 3.11 and a free [Groq API key](https://console.groq.com). A
 [FRED API key](https://fredaccount.stlouisfed.org) is optional (used only for the live price
 in the sidebar).
@@ -234,8 +252,8 @@ cd CrudeOil-Forecaster
 
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
+pip install -r requirements.txt     # or, for the exact versions that ship:
+                                    # pip install --require-hashes -r requirements.lock
 echo "GROQ_API_KEY=your_key" > .env  # optionally also FRED_API_KEY=...
 
 python train.py                      # fit the model (~1 minute)
@@ -252,7 +270,7 @@ streamlit run streamlit_ui/app_ui.py   # http://localhost:8501 (talks to the API
 **Tests and experiments:**
 
 ```bash
-pytest                                      # 140 tests, ~20 s
+pytest                                      # 160 tests, ~25 s
 python -m evaluation.run_backtest           # ~8 min  -> reports/backtest/
 python -m evaluation.run_calibration        # ~4 min  -> reports/calibration/
 python -m evaluation.run_scenario_study     # ~1 min  -> reports/scenarios/
@@ -270,7 +288,8 @@ Base URL: `https://crudeoil-forecaster.onrender.com` · interactive docs at
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/` | Status and model info (forecaster, LLM, data date) |
-| `GET` | `/health` | Lightweight keep-alive check |
+| `GET` | `/health` | Readiness: model loaded, data date and age, warnings (`ok` / `degraded`) |
+| `GET` | `/metrics` | Requests by status, p50/p95 latency, cache hit rate, LLM fallbacks |
 | `GET` | `/scenarios` | The five predefined scenarios |
 | `GET` | `/current-price` | Latest Brent price from FRED, falling back to the dataset |
 | `POST` | `/simulate-probabilistic` | **Main endpoint**: weighted multi-scenario outlook |
@@ -285,7 +304,18 @@ curl -X POST https://crudeoil-forecaster.onrender.com/simulate-probabilistic \
 
 The response includes the expected path, scenario paths and weights (LLM, macro-adjusted and
 final), the 80%/95% statistical band with its measured coverage, forecast dates, historical
-event context, the explanation, and model info.
+event context, the explanation, model info, and `llm_fallback` (true if an LLM step failed and
+a safe default was used).
+
+**Production behaviour**
+- **Input limits:** `forecast_weeks` must be 1–12 (the validated range) and `query` 3–500
+  characters; anything else is rejected with HTTP 422 before any LLM call.
+- **Caching:** identical questions (ignoring case and spacing) are answered from a 6-hour cache
+  keyed on the question, horizon, data version and LLM model: ~15 ms instead of several seconds,
+  with no LLM calls. Degraded answers are never cached.
+- **Observability:** every response carries an `X-Request-ID`; every request is logged as one
+  JSON line with its latency; `/metrics` summarises traffic. Server errors return a generic
+  message with the request id, never internal details.
 
 ---
 
@@ -304,7 +334,11 @@ event context, the explanation, and model info.
 ├── data/                   Live dataset, raw snapshots, event catalogue, manifest
 ├── models/registry.json    Promotion history (the model file itself is built on deploy)
 ├── reports/                Generated evaluation and data reports
-├── tests/                  140 tests
+├── serving/                Response cache, JSON logging, request ids, metrics
+├── tests/                  160 tests
+├── Dockerfile              API image (streamlit_ui/Dockerfile for the UI)
+├── docker-compose.yml      API + UI together
+├── requirements.lock       Every dependency pinned with hashes (streamlit_ui/ has its own)
 └── .github/workflows/      CI and the weekly data refresh
 ```
 
@@ -317,6 +351,7 @@ event context, the explanation, and model info.
 | API | Render (free tier, 512 MB) | Build: `pip install -r requirements.txt && python train.py` · Start: `uvicorn app:app --host 0.0.0.0 --port $PORT` · Python 3.11.8 from `.python-version` |
 | UI | Streamlit Community Cloud | Entry point `streamlit_ui/app_ui.py`; `API_URL` set as a secret |
 | Data | GitHub Actions | Weekly refresh opens a pull request; merging it redeploys the API |
+| Anywhere else | Docker | `docker build -t oil-api .` and run with `-e GROQ_API_KEY=...`; honours `$PORT` |
 
 | Variable | Where | Purpose |
 |---|---|---|
@@ -324,7 +359,17 @@ event context, the explanation, and model info.
 | `GROQ_MODEL` | Render (optional) | Override the default `openai/gpt-oss-120b` |
 | `FRED_API_KEY` | Render (optional) | Live price in the sidebar |
 | `API_URL` | Streamlit secrets | Backend URL |
+| `ALLOWED_ORIGINS` | Render (optional) | Comma-separated origins allowed to call the API from a browser (default `*`) |
+| `CACHE_TTL_SECONDS`, `CACHE_MAX_ENTRIES` | Render (optional) | Response cache lifetime (default 6 h) and size (default 256) |
+| `LOG_LEVEL` | Render (optional) | Default `INFO` |
 | `EIA_API_KEY` | GitHub secret (optional) | Inventories; EIA's public `DEMO_KEY` otherwise |
+
+**Updating dependencies:** edit `requirements.txt` (or `streamlit_ui/requirements.txt`), then
+regenerate the lock inside the production Python so versions and hashes match Linux:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src python:3.11.8-slim sh -c   "pip install pip-tools==7.4.1 && pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt"
+```
 
 One-time setup for the weekly refresh: in the repository's **Settings → Actions → General**,
 allow GitHub Actions to create pull requests. Never commit `.env`; it is git-ignored.
@@ -361,8 +406,6 @@ allow GitHub Actions to create pull requests. Never commit `.env`; it is git-ign
 - Scenario shocks shift the price once rather than building up over the horizon.
 
 **Next steps**
-- Production hardening: containerisation, exact dependency locking, response caching and
-  runtime monitoring.
 - A rigorous evaluation set for the LLM layer (consistency and correctness of the weights).
 - Volatility forecasts (e.g. GARCH) for intervals that hold up in crises.
 
