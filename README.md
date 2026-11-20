@@ -375,6 +375,28 @@ Workflow permissions**, tick "Allow GitHub Actions to create and approve pull re
 repository secrets (both free). Keyless public access works locally but was refused from
 GitHub's shared runners. Never commit `.env`; it is git-ignored.
 
+### Keeping the free tiers awake
+
+[`keep-awake.yml`](.github/workflows/keep-awake.yml) prevents cold starts:
+
+| Service | Sleeps after | Keep-awake |
+|---|---|---|
+| Render API | 15 minutes without requests | `GET /health` every 10 minutes, retrying through a cold start |
+| Streamlit UI | a period without visitors (plain HTTP requests don't count) | a headless browser visits every 6 hours and clicks "Yes, get this app back up" if needed ([script](ops/wake_streamlit.py)) |
+
+Setup: add a repository **variable** (Settings → Secrets and variables → Actions → Variables)
+`STREAMLIT_APP_URL` with the app's address; `API_URL` is optional (defaults to the Render URL).
+Both jobs report problems as warnings and never fail, because a failing scheduled run would
+attach a failing check to the latest `main` commit and hold back Render's deploy.
+
+Two things to know:
+- GitHub can delay scheduled runs at busy times, so a gap may occasionally exceed 15 minutes.
+  For a guarantee, also add a free external monitor (e.g. UptimeRobot or cron-job.org) that
+  requests `https://crudeoil-forecaster.onrender.com/health` every 5 minutes.
+- Render's free tier includes 750 instance hours per workspace per month. One always-on service
+  uses ~720–744, so keeping a second free service awake in the same workspace would exhaust the
+  hours and suspend both until the next month.
+
 ---
 
 ## Design decisions and trade-offs

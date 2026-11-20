@@ -1,0 +1,59 @@
+name: LLM evaluation
+
+# Runs the scenario-weighting evaluation (evaluation/run_llm_eval.py) against
+# the real model and attaches the report to the run. Manual only: it makes
+# ~160 calls and takes ~20 minutes on Groq's free tier.
+#
+# Never fails: manual runs attach their result to the latest main commit, and
+# a failing check there would hold back Render's deploy. Whether the targets
+# were met is in the report, not the job status.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Only the first N cases (blank = all 40)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install dependencies
+        run: pip install --require-hashes -r requirements.lock
+
+      - name: Evaluate v1 and v2 scenario weighting
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning::Add a GROQ_API_KEY repository secret to run the evaluation."
+            exit 0
+          fi
+          args=""
+          [ -n "$LIMIT" ] && args="--limit $LIMIT"
+          python -m evaluation.run_llm_eval $args || echo "::warning::The evaluation did not complete."
+          [ -f reports/llm_eval/report.md ] && cat reports/llm_eval/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: llm-eval-report
+          path: reports/llm_eval/
+          if-no-files-found: ignore

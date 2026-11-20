@@ -542,6 +542,9 @@ def render_data_tab(data):
 def render_results(data, query):
     st.markdown(f"<div class='small-mono' style='margin-bottom:0.6rem;'>Results for: "
                 f"<span style='color:#f0ede8;'>“{safe_text(query)}”</span></div>", unsafe_allow_html=True)
+    if data.get("in_scope") is False:
+        st.info("This question doesn't look like it is about oil or the macro forces the model covers, "
+                "so all scenarios are weighted equally. Try asking about supply, demand, conflict or rates.")
     if data.get("llm_fallback"):
         st.warning("The language model could not be reached, so default scenario weights and fallback "
                    "text were used. The forecast numbers are still computed by the model. Try again shortly.")

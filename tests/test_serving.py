@@ -7,14 +7,12 @@ from unittest.mock import MagicMock
 import groq
 import pytest
 
+from conftest import v2_payload
+
 from serving.cache import TTLCache, make_key, normalise_query
 from serving.observability import JsonFormatter, Metrics, request_id_from
 
-PROB_PAYLOAD = json.dumps({
-    "probabilities": {"opec_cut": 0.6, "geopolitical_tension": 0.4},
-    "primary_driver": "opec_cut", "confidence": "high", "reasoning": "test",
-    "scenario_context": "test query", "specific_entity": None,
-})
+PROB_PAYLOAD = v2_payload(opec_cut=0.6, geopolitical_tension=0.4)
 
 
 def _llm_returns(fake_client, content):

@@ -103,7 +103,7 @@ app = FastAPI(
     including this one, beats a no-change forecast for weekly Brent prices in
     2022–2025. Treat outputs as scenario analysis, not price prediction.
     """,
-    version="2.3.0"
+    version="2.4.0"
 )
 
 # Coverage of the statistical band, measured in the walk-forward backtests
@@ -293,6 +293,9 @@ class ProbabilisticResponse(BaseModel):
     historical_note:        str = ""
     # Added in v2.3: true when an LLM step failed and a safe fallback was used
     llm_fallback:           bool = False
+    # Added in v2.4 (step 5): false when the question is not about oil or macro drivers
+    in_scope:               bool = True
+    parser_version:         str = ""
 
 
 def _model_info() -> ModelInfo:
@@ -315,7 +318,7 @@ def root():
     """Health check — confirms API is running."""
     return {
         "status":     "online",
-        "message":    "Oil Price Scenario Forecasting API v2.3",
+        "message":    "Oil Price Scenario Forecasting API v2.4",
         "docs":       "/docs",
         "model_info": _model_info().model_dump(),
     }
@@ -608,6 +611,8 @@ def run_probabilistic_simulation(request: ScenarioRequest, http: Request):
             historical_context     = result.get("historical_context", {}),
             historical_note        = HISTORICAL_NOTE,
             llm_fallback           = bool(fallbacks),
+            in_scope               = bool(parsed.get("in_scope", True)),
+            parser_version         = str(parsed.get("parser_version", "")),
         )
         if fallbacks:
             # Degraded answer: count it, and do not cache it, so a short LLM
