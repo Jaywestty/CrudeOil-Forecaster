@@ -114,10 +114,16 @@ def fred_source() -> str:
     return "FRED API" if os.getenv("FRED_API_KEY") else "FRED website CSV (no FRED_API_KEY set)"
 
 
+EIA_DEMO_KEY = "DEMO_KEY"
+EIA_KEY_HELP = ("Register a free key at https://www.eia.gov/opendata/register.php and set it as "
+                "EIA_API_KEY (a repository secret for the weekly GitHub Action).")
+
+
 def fetch_eia(series_id: str, session: requests.Session | None = None) -> pd.Series:
     session = session or requests.Session()
+    key = os.getenv("EIA_API_KEY") or EIA_DEMO_KEY
     params = {
-        "api_key": os.getenv("EIA_API_KEY", "DEMO_KEY"),
+        "api_key": key,
         "data[]": "value",
         "facets[series][]": series_id,
         "frequency": "weekly",
@@ -126,7 +132,14 @@ def fetch_eia(series_id: str, session: requests.Session | None = None) -> pd.Ser
         "offset": 0,
         "length": 5000,
     }
-    r = _get(session, EIA_API.format(series=series_id), params)
+    try:
+        r = _get(session, EIA_API.format(series=series_id), params)
+    except (requests.HTTPError, RuntimeError) as e:
+        if key == EIA_DEMO_KEY:
+            # The shared demo key is limited per IP; cloud runners share IPs, so
+            # it is refused there (weekly refresh run #2: HTTP 403).
+            raise RuntimeError(f"EIA refused the public DEMO_KEY ({e}). {EIA_KEY_HELP}") from None
+        raise
     return parse_eia_json(r.json(), series_id)
 
 
